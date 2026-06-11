@@ -1,9 +1,25 @@
 import argparse
+import sqlite3
 import sys
+
+from secpull import config
+from secpull.db import init_db, upsert_company
+from secpull.edgar import pull_and_cache, TickerNotFound
 
 
 def _cmd_pull(args: argparse.Namespace) -> int:
-    print(f"pull: not implemented yet (ticker={args.ticker})")
+    try:
+        company, _ = pull_and_cache(args.ticker)
+    except TickerNotFound as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    conn = sqlite3.connect(config.DB_PATH)
+    init_db(conn)
+    upsert_company(conn, company)
+    conn.close()
+
+    print(f"Fetched {company.name} (CIK {company.cik}) — raw data cached.")
     return 0
 
 

@@ -5,15 +5,13 @@ DATA_DIR = Path("data")
 DB_PATH = DATA_DIR / "secpull.db"
 RAW_DIR = DATA_DIR / "raw"
 
-_user_agent: str | None = os.environ.get("SECPULL_USER_AGENT")
-
-
 def get_user_agent() -> str:
-    if not _user_agent:
+    val = os.environ.get("SECPULL_USER_AGENT")
+    if not val:
         raise EnvironmentError(
             "Set SECPULL_USER_AGENT to 'AppName (your-email)' — the SEC requires it."
         )
-    return _user_agent
+    return val
 
 
 def ensure_dirs() -> None:
