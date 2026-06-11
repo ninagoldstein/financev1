@@ -3,13 +3,14 @@ import sqlite3
 import sys
 
 from secpull import config
-from secpull.db import init_db, upsert_company
+from secpull.db import init_db, upsert_company, insert_facts
 from secpull.edgar import pull_and_cache, TickerNotFound
+from secpull.extract import extract_metrics
 
 
 def _cmd_pull(args: argparse.Namespace) -> int:
     try:
-        company, _ = pull_and_cache(args.ticker)
+        company, payload = pull_and_cache(args.ticker)
     except TickerNotFound as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -17,9 +18,13 @@ def _cmd_pull(args: argparse.Namespace) -> int:
     conn = sqlite3.connect(config.DB_PATH)
     init_db(conn)
     upsert_company(conn, company)
+
+    facts = extract_metrics(company.cik, payload)
+    inserted = insert_facts(conn, facts)
     conn.close()
 
     print(f"Fetched {company.name} (CIK {company.cik}) — raw data cached.")
+    print(f"Stored {len(facts)} financial facts for {company.ticker} ({inserted} new).")
     return 0
 
 
