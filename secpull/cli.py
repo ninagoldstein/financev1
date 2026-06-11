@@ -3,10 +3,12 @@ import sqlite3
 import sys
 
 from secpull import config
+from secpull.compare import comparison_rows, yoy_growth
 from secpull.db import init_db, upsert_company, insert_facts, get_facts
 from secpull.edgar import pull_and_cache, TickerNotFound
 from secpull.export import export_xlsx
 from secpull.extract import extract_metrics
+from secpull.models import METRIC_TAGS
 from secpull.report import build_grid, find_missing, render_table
 
 
@@ -90,6 +92,57 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_compare(args: argparse.Namespace) -> int:
+    if args.metric not in METRIC_TAGS:
+        valid = ", ".join(METRIC_TAGS)
+        print(f"Unknown metric '{args.metric}'. Valid metrics: {valid}", file=sys.stderr)
+        return 2
+
+    conn = sqlite3.connect(config.DB_PATH)
+    init_db(conn)
+
+    per_ticker: dict[str, list] = {}
+    for ticker in args.tickers:
+        cik = _get_cik(conn, ticker)
+        if cik is None:
+            print(f"Pulling {ticker}...")
+            try:
+                company, payload = pull_and_cache(ticker)
+            except TickerNotFound as e:
+                print(str(e), file=sys.stderr)
+                conn.close()
+                return 1
+            upsert_company(conn, company)
+            all_facts = extract_metrics(company.cik, payload)
+            insert_facts(conn, all_facts)
+            cik = company.cik
+            print(f"  Stored {len(all_facts)} facts for {ticker}.")
+
+        facts = get_facts(conn, cik=cik, metric=args.metric)
+        per_ticker[ticker] = [f for f in facts if f.fiscal_period == "FY"]
+
+    conn.close()
+
+    headers, rows = comparison_rows(per_ticker, args.metric)
+
+    missing = [
+        (row[0], headers[i + 1])
+        for row in rows if "YoY" not in row[0]
+        for i, cell in enumerate(row[1:])
+        if cell == "N/A"
+    ]
+
+    print(render_table(headers, rows))
+    print()
+    if missing:
+        print("Missing Data:")
+        for ticker, year in missing:
+            print(f"  {ticker}: {year}")
+    else:
+        print("Missing Data: none")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="secpull")
     sub = parser.add_subparsers(dest="command")
@@ -107,6 +160,24 @@ def main() -> None:
     p_export = sub.add_parser("export")
     p_export.add_argument("ticker", type=str.upper)
     p_export.set_defaults(func=_cmd_export)
+
+    p_compare = sub.add_parser(
+        "compare",
+        description=(
+            "Side-by-side annual comparison of one metric across tickers. "
+            "Note: fiscal years are NOT aligned calendars across companies "
+            "(e.g. LULU FY2023 ends Jan 2024; NKE FY2023 ends May 2023; "
+            "AAPL FY2023 ends Sep 2023). Labels reflect each company's own "
+            "fiscal year, which is standard but worth knowing when eyeballing comps."
+        ),
+    )
+    p_compare.add_argument("tickers", nargs="+", type=str.upper,
+                           metavar="TICKER")
+    p_compare.add_argument(
+        "--metric", default="revenue",
+        help="Metric to compare. One of: " + ", ".join(METRIC_TAGS),
+    )
+    p_compare.set_defaults(func=_cmd_compare)
 
     args = parser.parse_args()
     sys.exit(args.func(args))
