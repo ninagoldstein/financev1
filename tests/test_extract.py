@@ -38,6 +38,40 @@ def test_extract_restricts_forms():
     assert extract_metrics("0001397187", payload) == []
 
 
+# ---- fiscal_year derivation and cross-filing dedup ----
+
+def test_fiscal_year_derived_from_jan_end():
+    # fy=2025 is a comparative label from a later filing; fiscal_year must come from end_date
+    payload = {"facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
+        _pt("2024-01-28", 1.55e9, 2025, "FY", "10-K", "2026-03-17"),
+    ]}}}}}
+    facts = extract_metrics("0001397187", payload)
+    assert len(facts) == 1
+    assert facts[0].fiscal_year == 2023   # month=1 → 2024 - 1
+
+
+def test_fiscal_year_derived_from_dec_end():
+    payload = {"facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
+        _pt("2023-12-31", 1.0e9, 2024, "FY", "10-K", "2025-02-01"),
+    ]}}}}}
+    facts = extract_metrics("0001397187", payload)
+    assert len(facts) == 1
+    assert facts[0].fiscal_year == 2023   # month=12 → year unchanged
+
+
+def test_dedupe_collapses_cross_filing_comparatives():
+    # Same period appearing with fy=2023 (original) and fy=2024 (comparative) must yield one record
+    original    = _pt("2024-01-28", 9.619e9, 2023, "FY", "10-K", "2024-03-21")
+    comparative = _pt("2024-01-28", 9.619e9, 2024, "FY", "10-K", "2025-03-27")
+    payload = {"facts": {"us-gaap": {
+        "RevenueFromContractWithCustomerExcludingAssessedTax": {
+            "units": {"USD": [original, comparative]}}}}}
+    facts = extract_metrics("0001397187", payload)
+    rev = [f for f in facts if f.metric == "revenue" and f.end_date == "2024-01-28"]
+    assert len(rev) == 1
+    assert rev[0].fiscal_year == 2023
+
+
 # ---- Worked example (primary validation for the whole project) ----
 
 def test_lulu_fy_revenue_in_range(lulu_companyfacts):
