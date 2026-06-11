@@ -1,0 +1,81 @@
+import sqlite3
+from datetime import datetime, timezone
+
+from secpull.models import Company, FinancialFact
+
+_DDL = """
+CREATE TABLE IF NOT EXISTS companies (
+    cik        TEXT PRIMARY KEY,
+    ticker     TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS financials (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    cik           TEXT NOT NULL REFERENCES companies(cik),
+    metric        TEXT NOT NULL,
+    tag_used      TEXT NOT NULL,
+    value         REAL NOT NULL,
+    unit          TEXT NOT NULL,
+    fiscal_year   INTEGER NOT NULL,
+    fiscal_period TEXT NOT NULL,
+    form          TEXT NOT NULL,
+    end_date      TEXT NOT NULL,
+    filed_date    TEXT NOT NULL,
+    UNIQUE (cik, metric, fiscal_year, fiscal_period, form, end_date)
+);
+"""
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(_DDL)
+
+
+def upsert_company(conn: sqlite3.Connection, company: Company) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO companies (cik, ticker, name, fetched_at) VALUES (?, ?, ?, ?)",
+        (company.cik, company.ticker, company.name,
+         datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def insert_facts(conn: sqlite3.Connection, facts: list[FinancialFact]) -> int:
+    inserted = 0
+    for f in facts:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO financials
+               (cik, metric, tag_used, value, unit, fiscal_year, fiscal_period,
+                form, end_date, filed_date)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (f.cik, f.metric, f.tag_used, f.value, f.unit, f.fiscal_year,
+             f.fiscal_period, f.form, f.end_date, f.filed_date),
+        )
+        inserted += cur.rowcount
+    conn.commit()
+    return inserted
+
+
+def get_facts(
+    conn: sqlite3.Connection,
+    cik: str,
+    metric: str | None = None,
+) -> list[FinancialFact]:
+    sql = """SELECT cik, metric, tag_used, value, unit, fiscal_year,
+                    fiscal_period, form, end_date, filed_date
+             FROM financials WHERE cik = ?"""
+    params: list = [cik]
+    if metric is not None:
+        sql += " AND metric = ?"
+        params.append(metric)
+
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        FinancialFact(
+            cik=r[0], metric=r[1], tag_used=r[2], value=r[3], unit=r[4],
+            fiscal_year=r[5], fiscal_period=r[6], form=r[7],
+            end_date=r[8], filed_date=r[9],
+        )
+        for r in rows
+    ]
