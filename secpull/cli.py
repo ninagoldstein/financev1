@@ -8,6 +8,8 @@ from secpull.db import init_db, upsert_company, insert_facts, get_facts
 from secpull.edgar import pull_and_cache, TickerNotFound
 from secpull.export import export_xlsx
 from secpull.extract import extract_metrics
+from secpull.income_model import build_margin_assumptions, historical_metrics, project_income_statement
+from secpull.income_model_export import add_income_sheet
 from secpull.model import avg_growth, build_assumptions, historical_revenue, project_revenue, yoy_growth_rates
 from secpull.model_export import export_model_xlsx
 from secpull.models import METRIC_TAGS
@@ -154,10 +156,10 @@ def _cmd_model(args: argparse.Namespace) -> int:
         conn.close()
         return 1
 
-    facts = get_facts(conn, cik=cik, metric="revenue")
+    all_facts = get_facts(conn, cik=cik)
     conn.close()
 
-    rev_series = historical_revenue(facts)
+    rev_series = historical_revenue(all_facts)
     if len(rev_series) < 2:
         print(
             f"Not enough annual revenue data for {args.ticker} "
@@ -182,6 +184,19 @@ def _cmd_model(args: argparse.Namespace) -> int:
     exports_dir.mkdir(parents=True, exist_ok=True)
     out_path = exports_dir / f"{args.ticker}_model.xlsx"
     export_model_xlsx(args.ticker, rev_series, assumptions, projections, out_path)
+
+    # Income statement sheet
+    margin_assumptions = build_margin_assumptions(all_facts, rev_series)
+    income_projections = project_income_statement(projections, margin_assumptions)
+    metric_series = {
+        m: historical_metrics(all_facts, m)
+        for m in ("gross_profit", "operating_income", "net_income", "eps_diluted")
+    }
+    proj_years = [yr for yr, _ in projections["base"]]
+    from openpyxl import load_workbook as _load_wb
+    wb = _load_wb(out_path)
+    add_income_sheet(wb, args.ticker, rev_series, metric_series, margin_assumptions, assumptions, proj_years)
+    wb.save(out_path)
 
     # Terminal summary
     print(f"Revenue model for {args.ticker}")
@@ -212,7 +227,41 @@ def _cmd_model(args: argparse.Namespace) -> int:
             row += f"{'$' + f'{val / 1e9:.2f}B':>{col_w}}"
         print(row)
 
-    print(f"\nExported: {out_path}")
+    print()
+    def _fmt_pct(v): return f"{v * 100:.1f}%" if v is not None else "N/A"
+    def _fmt_shares(v): return f"{v:.1f}M" if v is not None else "N/A"
+    print("Margin assumptions (historical average):")
+    print(f"  Gross margin    : {_fmt_pct(margin_assumptions.gross_margin)}")
+    print(f"  Operating margin: {_fmt_pct(margin_assumptions.operating_margin)}")
+    print(f"  Net margin      : {_fmt_pct(margin_assumptions.net_margin)}")
+    print(f"  Diluted shares  : {_fmt_shares(margin_assumptions.diluted_shares_m)}")
+    print()
+
+    base_proj = income_projections["base"]
+    proj_yrs = [yr for yr, _ in base_proj["revenue"]]
+    col_w = 12
+    hdr = f"{'Metric':<22}" + "".join(f"{'FY' + str(y):>{col_w}}" for y in proj_yrs)
+    print("Income Statement Projections (Base):")
+    print(hdr)
+    print("-" * len(hdr))
+    for metric, label in (
+        ("revenue", "Revenue"),
+        ("gross_profit", "Gross Profit"),
+        ("operating_income", "Op. Income"),
+        ("net_income", "Net Income"),
+        ("eps_diluted", "EPS"),
+    ):
+        row = f"{label:<22}"
+        for yr, val in base_proj[metric]:
+            if val is None:
+                row += f"{'N/A':>{col_w}}"
+            elif metric == "eps_diluted":
+                row += f"{'$' + f'{val:.2f}':>{col_w}}"
+            else:
+                row += f"{'$' + f'{val / 1e9:.2f}B':>{col_w}}"
+        print(row)
+
+    print(f"\nExported: {out_path}  (2 sheets: Revenue Model, Income Statement)")
     return 0
 
 
