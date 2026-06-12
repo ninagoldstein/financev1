@@ -105,8 +105,10 @@ def _compute_scenario_dcf(
 
     ev_gg = sum_pv + pv_tv_gg
     equity_gg = ev_gg - inputs.net_debt
+    # diluted_shares_m is in millions (e.g. 125 = 125M shares); convert to
+    # actual share count so price is in $/share (same unit as equity raw USD).
     price_gg = (
-        equity_gg / inputs.diluted_shares_m
+        equity_gg / (inputs.diluted_shares_m * 1_000_000)
         if inputs.diluted_shares_m is not None
         else None
     )
@@ -125,7 +127,7 @@ def _compute_scenario_dcf(
         ev_exit = sum_pv + pv_tv_exit
         equity_exit = ev_exit - inputs.net_debt
         price_exit = (
-            equity_exit / inputs.diluted_shares_m
+            equity_exit / (inputs.diluted_shares_m * 1_000_000)
             if inputs.diluted_shares_m is not None
             else None
         )
