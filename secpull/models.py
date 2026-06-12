@@ -100,8 +100,8 @@ METRIC_TAGS: dict[str, list[str]] = {
     "short_term_debt": ["ShortTermBorrowings", "CommercialPaper"],
     "total_current_liabilities": ["LiabilitiesCurrent"],
     "long_term_debt": [
-        "LongTermDebtNoncurrent",
         "LongTermDebtAndCapitalLeaseObligations",
+        "LongTermDebtNoncurrent",
         "LongTermDebt",
         "LongTermNotesPayable",
     ],
