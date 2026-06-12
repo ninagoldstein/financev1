@@ -96,8 +96,8 @@ METRIC_TAGS: dict[str, list[str]] = {
 
     # ── Balance Sheet — Equity ────────────────────────────────────────────────
     "additional_paid_in_capital": [
-        "AdditionalPaidInCapital",
         "AdditionalPaidInCapitalCommonStock",
+        "AdditionalPaidInCapital",
     ],
     "retained_earnings": ["RetainedEarningsAccumulatedDeficit"],
     "treasury_stock": ["TreasuryStockValue"],
@@ -113,17 +113,24 @@ METRIC_TAGS: dict[str, list[str]] = {
     ],
     "change_in_accounts_receivable": ["IncreaseDecreaseInAccountsReceivable"],
     "change_in_inventory": ["IncreaseDecreaseInInventories"],
-    "change_in_accounts_payable": ["IncreaseDecreaseInAccountsPayable"],
+    "change_in_accounts_payable": [
+        "IncreaseDecreaseInAccountsPayable",
+        "IncreaseDecreaseInAccountsPayableAndAccruedLiabilities",
+        "IncreaseDecreaseInAccountsPayableAndOtherOperatingLiabilities",
+    ],
     "change_in_deferred_revenue": [
         "IncreaseDecreaseInDeferredRevenue",
         "IncreaseDecreaseInContractWithCustomerLiability",
     ],
-    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment"],
+    "capex": [
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+    ],
     "acquisitions": ["PaymentsToAcquireBusinessesNetOfCashAcquired"],
     "cfo": ["NetCashProvidedByUsedInOperatingActivities"],
     "cfi": ["NetCashProvidedByUsedInInvestingActivities"],
     "cff": ["NetCashProvidedByUsedInFinancingActivities"],
     "debt_repayment": ["RepaymentsOfLongTermDebt"],
     "share_repurchases": ["PaymentsForRepurchaseOfCommonStock"],
-    "dividends_paid": ["PaymentsOfDividends"],
+    "dividends_paid": ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock"],
 }
