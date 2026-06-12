@@ -39,7 +39,7 @@ def _cmd_pull(args: argparse.Namespace) -> int:
     conn.close()
 
     print(f"Fetched {company.name} (CIK {company.cik}) — raw data cached.")
-    print(f"Stored {len(facts)} financial facts for {company.ticker} ({inserted} new).")
+    print(f"Stored {len(facts)} financial facts for {company.ticker} ({inserted} new/updated).")
     return 0
 
 

@@ -45,10 +45,16 @@ def insert_facts(conn: sqlite3.Connection, facts: list[FinancialFact]) -> int:
     inserted = 0
     for f in facts:
         cur = conn.execute(
-            """INSERT OR IGNORE INTO financials
+            """INSERT INTO financials
                (cik, metric, tag_used, value, unit, fiscal_year, fiscal_period,
                 form, end_date, filed_date)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (cik, metric, fiscal_year, fiscal_period, form, end_date)
+               DO UPDATE SET tag_used   = excluded.tag_used,
+                             value      = excluded.value,
+                             unit       = excluded.unit,
+                             filed_date = excluded.filed_date
+               WHERE excluded.filed_date > financials.filed_date""",
             (f.cik, f.metric, f.tag_used, f.value, f.unit, f.fiscal_year,
              f.fiscal_period, f.form, f.end_date, f.filed_date),
         )
