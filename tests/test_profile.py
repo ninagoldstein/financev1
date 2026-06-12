@@ -7,7 +7,7 @@ from secpull.derived import compute_derived_metrics
 from secpull.extract import extract_metrics
 from secpull.models import FinancialFact, METRIC_TAGS
 from secpull.profile import Ratio, CompanyProfile, build_profile
-from secpull.quality import COMPLETE, PARTIAL, DERIVED, STALE
+from secpull.quality import COMPLETE, PARTIAL, DERIVED, STALE, QualityIssue
 from secpull.statements import build_statements, StatementLine
 
 # ── Synthetic helpers ─────────────────────────────────────────────────────────
@@ -282,15 +282,152 @@ def test_stale_note_appears_when_stale_metrics_present():
 
 
 def test_unreliable_note_for_ford():
-    """Ford profile must list economic flags for UNRELIABLE metrics."""
+    """Ford profile must emit ERROR QualityIssue for UNRELIABLE metrics."""
     facts = [
         _f("revenue", 2025, 187e9, quality=COMPLETE),
         _f("long_term_debt", 2020, 291e6, quality=COMPLETE),
     ]
     stmts = build_statements("0000037996", "F", facts, [], max_years=5)
     profile = build_profile(stmts, "Ford Motor Company")
-    assert any("ECONOMIC FLAG" in n for n in profile.quality_notes)
+    errors = [qi for qi in profile.quality_issues if qi.severity == "ERROR"]
+    assert any(qi.metric == "long_term_debt" for qi in errors)
+    # quality_notes must mirror quality_issues content
     assert any("long_term_debt" in n for n in profile.quality_notes)
+
+
+# ── QualityIssue structure ────────────────────────────────────────────────────
+
+def test_quality_issues_field_exists():
+    facts = _minimal_facts()
+    stmts = _make_stmts(facts)
+    profile = build_profile(stmts, "Test Co")
+    assert hasattr(profile, "quality_issues")
+    assert isinstance(profile.quality_issues, list)
+    assert all(isinstance(qi, QualityIssue) for qi in profile.quality_issues)
+
+
+def test_quality_issues_first_is_coverage_summary():
+    """First QualityIssue must be the __coverage__ summary at INFO severity."""
+    facts = _minimal_facts()
+    stmts = _make_stmts(facts)
+    profile = build_profile(stmts, "Test Co")
+    first = profile.quality_issues[0]
+    assert first.metric == "__coverage__"
+    assert first.severity == "INFO"
+    assert "Coverage:" in first.message
+
+
+def test_quality_issues_stale_emits_warning():
+    """Metrics older than FY2024 must produce WARNING QualityIssue."""
+    facts = [_f("interest_expense", 2023, 5e9)]
+    stmts = _make_stmts(facts)
+    profile = build_profile(stmts, "Test Co")
+    warnings = [qi for qi in profile.quality_issues if qi.severity == "WARNING"]
+    assert any(qi.metric == "interest_expense" for qi in warnings)
+    stale_issue = next(qi for qi in warnings if qi.metric == "interest_expense")
+    assert "STALE" in stale_issue.message
+    assert "FY2023" in stale_issue.message
+
+
+def test_quality_issues_absent_emits_warning():
+    """Metrics with no extracted data must produce WARNING QualityIssue."""
+    facts = [_f("revenue", 2025, 10e9)]   # only revenue; everything else absent
+    stmts = _make_stmts(facts)
+    profile = build_profile(stmts, "Test Co")
+    warnings = [qi for qi in profile.quality_issues if qi.severity == "WARNING"]
+    # net_income is absent in this minimal fact set
+    assert any(qi.metric == "net_income" for qi in warnings)
+    absent_issue = next(qi for qi in warnings if qi.metric == "net_income")
+    assert "ABSENT" in absent_issue.message
+
+
+def test_quality_issues_unreliable_emits_error():
+    """UNRELIABLE metrics must produce ERROR QualityIssue."""
+    facts = [_f("long_term_debt", 2025, 291e6, quality=COMPLETE)]
+    stmts = build_statements("0000037996", "F", facts, [], max_years=5)
+    profile = build_profile(stmts, "Ford Motor Company")
+    errors = [qi for qi in profile.quality_issues if qi.severity == "ERROR"]
+    assert len(errors) >= 1
+    ltd_error = next((qi for qi in errors if qi.metric == "long_term_debt"), None)
+    assert ltd_error is not None, "long_term_debt must emit an ERROR QualityIssue"
+    assert "UNRELIABLE" in ltd_error.message
+
+
+def test_quality_issues_structural_gaps_excluded():
+    """Structural gaps should NOT produce a QualityIssue — they are expected absences."""
+    facts = [_f("revenue", 2025, 10e9)]
+    stmts = build_statements("0001397187", "LULU", facts, [], max_years=5)
+    profile = build_profile(stmts, "lululemon")
+    # LULU structural gaps: interest_expense, long_term_debt, etc.
+    # None of these should appear in quality_issues
+    gap_in_issues = [
+        qi for qi in profile.quality_issues
+        if qi.metric in {"interest_expense", "long_term_debt", "dividends_paid"}
+    ]
+    assert len(gap_in_issues) == 0
+
+
+def test_quality_notes_derived_from_quality_issues():
+    """quality_notes list must exactly mirror quality_issues messages."""
+    facts = _minimal_facts()
+    stmts = _make_stmts(facts)
+    profile = build_profile(stmts, "Test Co")
+    expected = [qi.message for qi in profile.quality_issues]
+    assert profile.quality_notes == expected
+
+
+def test_severity_ordering_errors_before_warnings():
+    """ERROR issues must appear before WARNING issues in quality_issues."""
+    facts = [
+        _f("long_term_debt", 2025, 291e6, quality=COMPLETE),
+        _f("interest_expense", 2023, 5e9),   # will be STALE → WARNING
+    ]
+    stmts = build_statements("0000037996", "F", facts, [], max_years=5)
+    profile = build_profile(stmts, "Ford Motor Company")
+    severities = [qi.severity for qi in profile.quality_issues[1:]]  # skip __coverage__
+    error_idx = next((i for i, s in enumerate(severities) if s == "ERROR"), None)
+    warning_idx = next((i for i, s in enumerate(severities) if s == "WARNING"), None)
+    if error_idx is not None and warning_idx is not None:
+        assert error_idx < warning_idx
+
+
+# ── Canonical metric universe ─────────────────────────────────────────────────
+
+def test_total_canonical_equals_metric_tags_length():
+    """_TOTAL_CANONICAL must be derived from METRIC_TAGS, not hardcoded."""
+    from secpull.profile import _TOTAL_CANONICAL
+    assert _TOTAL_CANONICAL == len(METRIC_TAGS)
+
+
+def test_derived_only_metrics_not_in_all_lines():
+    """Derived-only metrics (ebitda, fcf) are NOT in METRIC_TAGS and must not appear in all_lines."""
+    from secpull.models import DerivedFact
+    facts = _minimal_facts()
+    d = DerivedFact(
+        cik=_CIK, metric="ebitda", source="derived",
+        formula_used="operating_income + depreciation_amortization",
+        source_metrics_used="operating_income,depreciation_amortization",
+        value=3e9, unit="USD",
+        fiscal_year=2025, fiscal_period="FY",
+        form="10-K", end_date="2026-01-31",
+        coverage_flag="complete",
+    )
+    stmts = build_statements(_CIK, _TICKER, facts, [d], max_years=5)
+    # ebitda and fcf are TIER1_FORMULAS derived-only — NOT in METRIC_TAGS
+    # all_lines must match METRIC_TAGS exactly; derived-only metrics cannot sneak in
+    assert "ebitda" not in METRIC_TAGS     # design invariant
+    assert "fcf" not in METRIC_TAGS        # design invariant
+    assert "ebitda" not in stmts.all_lines
+    assert "fcf" not in stmts.all_lines
+    # all_lines is bounded by METRIC_TAGS
+    assert set(stmts.all_lines.keys()) == set(METRIC_TAGS.keys())
+
+
+def test_all_lines_count_equals_metric_tags():
+    """all_lines must have exactly as many entries as METRIC_TAGS."""
+    facts = _minimal_facts()
+    stmts = _make_stmts(facts)
+    assert len(stmts.all_lines) == len(METRIC_TAGS)
 
 
 # ── years field ───────────────────────────────────────────────────────────────

@@ -28,6 +28,33 @@ STRUCTURAL_GAP = "STRUCTURAL_GAP"
 STALE          = "STALE"
 UNRELIABLE     = "UNRELIABLE"
 
+
+# ── Structured quality annotation ─────────────────────────────────────────────
+
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass(frozen=True)
+class QualityIssue:
+    """Structured quality annotation attached to one canonical metric.
+
+    severity:
+      INFO    — informational; no action required.
+                Examples: metric is DERIVED (expected), PARTIAL with minor limits.
+      WARNING — data quality concern that may affect analysis.
+                Examples: STALE (tag stopped; no current data), ABSENT (no tag found).
+      ERROR   — metric is economically unreliable despite being technically extracted.
+                Examples: Ford long_term_debt (excludes $100B+ Ford Credit debt).
+
+    metric:
+      Canonical metric name from METRIC_TAGS, or the sentinel "__coverage__"
+      for the portfolio-level coverage summary issue.
+    """
+    metric: str      # canonical metric name or "__coverage__"
+    severity: str    # "INFO" | "WARNING" | "ERROR"
+    message: str
+
 # Metrics with max(fiscal_year) < STALE_THRESHOLD are classified STALE at audit time.
 STALE_THRESHOLD = 2024
 
