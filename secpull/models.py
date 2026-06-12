@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,22 @@ class FinancialFact:
     form: str
     end_date: str
     filed_date: str
+
+
+@dataclass(frozen=True)
+class DerivedFact:
+    cik: str
+    metric: str
+    source: str                  # always "derived"
+    formula_used: str
+    source_metrics_used: str     # comma-separated list of input metric names
+    value: Optional[float]       # None when inputs were missing or div-by-zero
+    unit: str
+    fiscal_year: int
+    fiscal_period: str
+    form: str
+    end_date: str
+    coverage_flag: str           # "complete" | "partial" | "missing"
 
 
 METRIC_TAGS: dict[str, list[str]] = {
@@ -84,6 +101,7 @@ METRIC_TAGS: dict[str, list[str]] = {
     "total_current_liabilities": ["LiabilitiesCurrent"],
     "long_term_debt": [
         "LongTermDebtNoncurrent",
+        "LongTermDebtAndCapitalLeaseObligations",
         "LongTermDebt",
         "LongTermNotesPayable",
     ],

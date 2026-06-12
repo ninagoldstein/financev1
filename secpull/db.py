@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime, timezone
 
-from secpull.models import Company, FinancialFact
+from secpull.models import Company, DerivedFact, FinancialFact
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS companies (
@@ -23,6 +23,23 @@ CREATE TABLE IF NOT EXISTS financials (
     form          TEXT NOT NULL,
     end_date      TEXT NOT NULL,
     filed_date    TEXT NOT NULL,
+    UNIQUE (cik, metric, fiscal_year, fiscal_period, form, end_date)
+);
+
+CREATE TABLE IF NOT EXISTS derived_financials (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    cik                 TEXT NOT NULL REFERENCES companies(cik),
+    metric              TEXT NOT NULL,
+    source              TEXT NOT NULL DEFAULT 'derived',
+    formula_used        TEXT NOT NULL,
+    source_metrics_used TEXT NOT NULL,
+    value               REAL,
+    unit                TEXT NOT NULL,
+    fiscal_year         INTEGER NOT NULL,
+    fiscal_period       TEXT NOT NULL,
+    form                TEXT NOT NULL,
+    end_date            TEXT NOT NULL,
+    coverage_flag       TEXT NOT NULL,
     UNIQUE (cik, metric, fiscal_year, fiscal_period, form, end_date)
 );
 """
@@ -61,6 +78,58 @@ def insert_facts(conn: sqlite3.Connection, facts: list[FinancialFact]) -> int:
         inserted += cur.rowcount
     conn.commit()
     return inserted
+
+
+def insert_derived_facts(conn: sqlite3.Connection, facts: list[DerivedFact]) -> int:
+    inserted = 0
+    for f in facts:
+        cur = conn.execute(
+            """INSERT INTO derived_financials
+               (cik, metric, source, formula_used, source_metrics_used,
+                value, unit, fiscal_year, fiscal_period, form, end_date, coverage_flag)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (cik, metric, fiscal_year, fiscal_period, form, end_date)
+               DO UPDATE SET formula_used        = excluded.formula_used,
+                             source_metrics_used = excluded.source_metrics_used,
+                             value               = excluded.value,
+                             unit                = excluded.unit,
+                             coverage_flag       = excluded.coverage_flag""",
+            (f.cik, f.metric, f.source, f.formula_used, f.source_metrics_used,
+             f.value, f.unit, f.fiscal_year, f.fiscal_period, f.form,
+             f.end_date, f.coverage_flag),
+        )
+        inserted += cur.rowcount
+    conn.commit()
+    return inserted
+
+
+def get_derived_facts(
+    conn: sqlite3.Connection,
+    cik: str,
+    metric: str | None = None,
+    coverage_flag: str | None = None,
+) -> list[DerivedFact]:
+    sql = """SELECT cik, metric, source, formula_used, source_metrics_used,
+                    value, unit, fiscal_year, fiscal_period, form, end_date, coverage_flag
+             FROM derived_financials WHERE cik = ?"""
+    params: list = [cik]
+    if metric is not None:
+        sql += " AND metric = ?"
+        params.append(metric)
+    if coverage_flag is not None:
+        sql += " AND coverage_flag = ?"
+        params.append(coverage_flag)
+
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        DerivedFact(
+            cik=r[0], metric=r[1], source=r[2], formula_used=r[3],
+            source_metrics_used=r[4], value=r[5], unit=r[6],
+            fiscal_year=r[7], fiscal_period=r[8], form=r[9],
+            end_date=r[10], coverage_flag=r[11],
+        )
+        for r in rows
+    ]
 
 
 def get_facts(

@@ -4,7 +4,8 @@ import sys
 
 from secpull import config
 from secpull.compare import comparison_rows, yoy_growth
-from secpull.db import init_db, upsert_company, insert_facts, get_facts
+from secpull.db import init_db, upsert_company, insert_facts, insert_derived_facts, get_facts
+from secpull.derived import compute_derived_metrics, TIER1_FORMULAS
 from secpull.edgar import pull_and_cache, TickerNotFound
 from secpull.export import export_xlsx
 from secpull.extract import extract_metrics
@@ -36,10 +37,30 @@ def _cmd_pull(args: argparse.Namespace) -> int:
 
     facts = extract_metrics(company.cik, payload)
     inserted = insert_facts(conn, facts)
+
+    derived = compute_derived_metrics(company.cik, facts)
+    insert_derived_facts(conn, derived)
     conn.close()
 
     print(f"Fetched {company.name} (CIK {company.cik}) — raw data cached.")
     print(f"Stored {len(facts)} financial facts for {company.ticker} ({inserted} new/updated).")
+
+    # Coverage comparison: direct vs. direct + derived
+    direct_fy_metrics = {f.metric for f in facts if f.fiscal_period == "FY"}
+    derived_new_fy = {
+        d.metric for d in derived
+        if d.fiscal_period == "FY" and d.coverage_flag == "complete"
+        and d.metric not in direct_fy_metrics
+    }
+    total_fy = len(direct_fy_metrics) + len(derived_new_fy)
+    print(
+        f"Coverage (annual)  : {len(direct_fy_metrics)} direct"
+        f" + {len(derived_new_fy)} derived"
+        f" = {total_fy} unique metrics with FY data"
+    )
+    if derived_new_fy:
+        for m in sorted(derived_new_fy):
+            print(f"  derived  {m:<28} {TIER1_FORMULAS[m]['formula']}")
     return 0
 
 
