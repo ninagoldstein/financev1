@@ -10,8 +10,9 @@ Sheets produced (in order):
   6. Sensitivity - GGM     — implied share price grid: WACC × terminal growth rate
   7. Sensitivity - Exit    — implied share price grid: WACC × exit EBITDA multiple
 
-All dollar amounts are shown in $ millions.  Percentages are shown as decimals
-formatted as 0.0%.  Price per share is shown as $0.00.
+display_unit controls presentation only — internal model always uses raw USD:
+  "USD"     (default) — show actual values with comma formatting (#,##0)
+  "millions"          — divide by 1,000,000 for display (#,##0.0)
 
 Static values only — no Excel formulas.
 """
@@ -43,6 +44,7 @@ _BLACK   = "000000"
 # ── Number formats ────────────────────────────────────────────────────────────
 
 _FMT_M   = '#,##0.0'       # $ millions
+_FMT_USD = '#,##0'         # raw USD with commas
 _FMT_PCT = '0.0%'          # percentage
 _FMT_PPX = '0.0x'          # not a real Excel format; used as a label suffix
 _FMT_SH  = '$#,##0.00'     # price per share / EPS
@@ -152,11 +154,27 @@ def _autofit(ws, min_width: int = 10, max_width: int = 42) -> None:
         ws.column_dimensions[col[0].column_letter].width = min(best + 3, max_width)
 
 
-# ── Unit helper ───────────────────────────────────────────────────────────────
+# ── Display-unit helpers ──────────────────────────────────────────────────────
 
-def _m(value: float | None) -> float | None:
-    """Convert raw USD to $ millions."""
-    return value / 1e6 if value is not None else None
+def _disp(value: float | None, unit: str) -> float | None:
+    """Apply presentation conversion. Internal model always stores raw USD."""
+    if value is None:
+        return None
+    return value / 1_000_000 if unit == "millions" else value
+
+
+def _dollar_fmt(unit: str) -> str:
+    return _FMT_M if unit == "millions" else _FMT_USD
+
+
+def _unit_suffix(unit: str) -> str:
+    """Title suffix added when displaying in millions."""
+    return "  ($ millions)" if unit == "millions" else ""
+
+
+def _unit_header(unit: str) -> str:
+    """Sub-header text shown above year columns."""
+    return "$ millions" if unit == "millions" else ""
 
 
 def _stat_line_value(line: StatementLine, yr: int) -> float | None:
@@ -172,6 +190,7 @@ def _write_summary(
     assumptions: ForecastAssumptions,
     projected: ProjectedStatements,
     dcf: DCFResult,
+    display_unit: str,
 ) -> None:
     ws = wb.create_sheet("Summary")
     ws.column_dimensions["A"].width = 30
@@ -185,13 +204,17 @@ def _write_summary(
     row += 1
 
     # Company metadata
+    base_rev = _disp(projected.base_revenue, display_unit)
+    rev_label = "Base Revenue ($ millions)" if display_unit == "millions" else "Base Revenue"
+    rev_value = (f"${base_rev:,.0f}M" if display_unit == "millions"
+                 else f"${base_rev:,.0f}")
     meta = [
         ("Company", profile.name),
         ("Ticker", profile.ticker),
         ("CIK", profile.cik),
         ("Historical Period", f"{min(profile.years)}–{max(profile.years)}"),
         ("Forecast Period", f"{projected.base.years[0].year}–{projected.base.years[-1].year}"),
-        ("Base Revenue ($ millions)", f"${_m(projected.base_revenue):,.0f}M"),
+        (rev_label, rev_value),
     ]
     for label, value in meta:
         _cell(ws, row, 1, label, bold=True, fill_hex=_GREY)
@@ -262,10 +285,12 @@ def _write_hist_section(
     years: list[int],
     bold_metrics: set[str],
     fill_metrics: dict[str, str],
+    display_unit: str,
 ) -> int:
     """Write one statement section. Returns next available row."""
     row = start_row
     n_years = len(years)
+    dfmt = _dollar_fmt(display_unit)
 
     # Section header spanning all year columns
     _cell(ws, row, 1, title, bold=True, fill_hex=_BLUE, font_color=_WHITE)
@@ -274,7 +299,7 @@ def _write_hist_section(
     row += 1
 
     # Year headers
-    _cell(ws, row, 1, "$ millions", bold=False, fill_hex=_LBLUE)
+    _cell(ws, row, 1, _unit_header(display_unit), bold=False, fill_hex=_LBLUE)
     for i, yr in enumerate(years):
         _cell(ws, row, 2 + i, yr, bold=True, fill_hex=_LBLUE, align="center")
     row += 1
@@ -288,10 +313,10 @@ def _write_hist_section(
         flag = " [GAP]" if line.is_structural_gap else (" [STALE]" if line.is_stale else "")
         _cell(ws, row, 1, label + flag, bold=is_bold, fill_hex=fill_hex)
         for i, yr in enumerate(years):
-            val = _m(_stat_line_value(line, yr))
+            val = _disp(_stat_line_value(line, yr), display_unit)
             _cell(ws, row, 2 + i,
                   val if not (line.is_structural_gap or line.is_stale) else None,
-                  fmt=_FMT_M, bold=is_bold, fill_hex=fill_hex, align="right")
+                  fmt=dfmt, bold=is_bold, fill_hex=fill_hex, align="right")
         row += 1
 
     return row + 1   # blank separator row
@@ -301,13 +326,15 @@ def _write_historical(
     wb: openpyxl.Workbook,
     stmts: HistoricalStatements,
     profile: CompanyProfile,
+    display_unit: str,
 ) -> None:
     ws = wb.create_sheet("Historical Financials")
     ws.column_dimensions["A"].width = 32
     years = stmts.years
 
     row = 1
-    _cell(ws, row, 1, f"HISTORICAL FINANCIALS — {profile.ticker}  ($ millions)",
+    _cell(ws, row, 1,
+          f"HISTORICAL FINANCIALS — {profile.ticker}{_unit_suffix(display_unit)}",
           bold=True, fill_hex=_NAVY, font_color=_WHITE)
     for c in range(2, 2 + len(years)):
         _cell(ws, row, c, None, fill_hex=_NAVY)
@@ -334,12 +361,7 @@ def _write_historical(
         ("EPS (Diluted)",     is_.eps_diluted),
     ]
     row = _write_hist_section(ws, row, "INCOME STATEMENT", is_lines,
-                              years, _BOLD_IS, _FILL_IS)
-
-    # EPS row uses $0.00 format — patch it after the fact by finding the row
-    # (simpler: we just use _FMT_M for all; EPS looks fine scaled to millions
-    #  since EPS is already per-share and tiny — override explicitly)
-    # We'll leave the _FMT_M format on EPS for consistency; it's clear from label.
+                              years, _BOLD_IS, _FILL_IS, display_unit)
 
     _BOLD_BS = {"Total Assets", "Total Equity", "Total Current Assets",
                 "Total Current Liabilities", "Total Liabilities"}
@@ -368,7 +390,7 @@ def _write_historical(
         ("Total Equity",            bs.total_equity),
     ]
     row = _write_hist_section(ws, row, "BALANCE SHEET", bs_lines,
-                              years, _BOLD_BS, _FILL_BS)
+                              years, _BOLD_BS, _FILL_BS, display_unit)
 
     _BOLD_CFS = {"CFO", "CFI", "CFF", "FCF", "Free Cash Flow",
                  "Cash From Operations", "Cash From Investing", "Cash From Financing"}
@@ -391,7 +413,7 @@ def _write_historical(
         ("Free Cash Flow",          cfs.fcf),
     ]
     row = _write_hist_section(ws, row, "CASH FLOW STATEMENT", cfs_lines,
-                              years, _BOLD_CFS, _FILL_CFS)
+                              years, _BOLD_CFS, _FILL_CFS, display_unit)
 
     ws.freeze_panes = "B3"
     _autofit(ws)
@@ -405,10 +427,12 @@ def _write_scenario_block(
     start_col: int,
     scenario: ScenarioForecast,
     label: str,
+    display_unit: str,
 ) -> None:
     """Write one scenario block (label + year headers + metric rows)."""
     n = len(scenario.years)
     row = start_row
+    dfmt = _dollar_fmt(display_unit)
 
     # Scenario header (merged visually by filling all year columns)
     _cell(ws, row, start_col, label, bold=True,
@@ -423,17 +447,17 @@ def _write_scenario_block(
         _cell(ws, row, start_col + 1 + i, fy.year, bold=True,
               fill_hex=_LBLUE, align="center")
 
-    # Metric rows (label col only in first scenario block; skipped in subsequent)
+    # Metric rows
     metrics = [
-        ("Revenue",     [_m(fy.revenue)     for fy in scenario.years], _FMT_M, False),
-        ("Gross Profit",[_m(fy.gross_profit) for fy in scenario.years], _FMT_M, False),
-        ("EBIT",        [_m(fy.ebit)        for fy in scenario.years], _FMT_M, True),
-        ("D&A",         [_m(fy.da)          for fy in scenario.years], _FMT_M, False),
-        ("EBITDA",      [_m(fy.ebitda)      for fy in scenario.years], _FMT_M, True),
-        ("Net Income",  [_m(fy.net_income)  for fy in scenario.years], _FMT_M, True),
-        ("Capex",       [_m(fy.capex)       for fy in scenario.years], _FMT_M, False),
-        ("ΔNWC",        [_m(fy.delta_nwc)   for fy in scenario.years], _FMT_M, False),
-        ("FCFF",        [_m(fy.fcff)        for fy in scenario.years], _FMT_M, True),
+        ("Revenue",      [_disp(fy.revenue,      display_unit) for fy in scenario.years], dfmt, False),
+        ("Gross Profit", [_disp(fy.gross_profit,  display_unit) for fy in scenario.years], dfmt, False),
+        ("EBIT",         [_disp(fy.ebit,          display_unit) for fy in scenario.years], dfmt, True),
+        ("D&A",          [_disp(fy.da,            display_unit) for fy in scenario.years], dfmt, False),
+        ("EBITDA",       [_disp(fy.ebitda,        display_unit) for fy in scenario.years], dfmt, True),
+        ("Net Income",   [_disp(fy.net_income,    display_unit) for fy in scenario.years], dfmt, True),
+        ("Capex",        [_disp(fy.capex,         display_unit) for fy in scenario.years], dfmt, False),
+        ("ΔNWC",         [_disp(fy.delta_nwc,     display_unit) for fy in scenario.years], dfmt, False),
+        ("FCFF",         [_disp(fy.fcff,          display_unit) for fy in scenario.years], dfmt, True),
     ]
     for metric_row_idx, (metric_label, vals, fmt, is_bold) in enumerate(metrics):
         r = row + 1 + metric_row_idx
@@ -449,12 +473,13 @@ def _write_forecast(
     wb: openpyxl.Workbook,
     projected: ProjectedStatements,
     assumptions: ForecastAssumptions,
+    display_unit: str,
 ) -> None:
     ws = wb.create_sheet("Forecast")
 
     row = 1
     _cell(ws, row, 1,
-          f"PROJECTED FINANCIALS — {projected.ticker}  ($ millions)",
+          f"PROJECTED FINANCIALS — {projected.ticker}{_unit_suffix(display_unit)}",
           bold=True, fill_hex=_NAVY, font_color=_WHITE)
     n_total_cols = 3 * (len(projected.base.years) + 1) + 1
     for c in range(2, n_total_cols + 2):
@@ -463,18 +488,13 @@ def _write_forecast(
     row += 2
 
     n_yrs = len(projected.base.years)
-    col_bear = 1
-    col_base = col_bear + n_yrs + 1 + 1   # label col + year cols + gap
-    col_bull = col_base + n_yrs + 1 + 1
 
-    # Write three scenario blocks side by side starting from col 1
-    # Each block: 1 label col + N year cols
     for scenario, label, scol in [
         (projected.bear, "BEAR",  1),
         (projected.base, "BASE",  1 + n_yrs + 1 + 1),
         (projected.bull, "BULL",  1 + (n_yrs + 1 + 1) * 2),
     ]:
-        _write_scenario_block(ws, row, scol, scenario, label)
+        _write_scenario_block(ws, row, scol, scenario, label, display_unit)
 
     ws.column_dimensions["A"].width = 18
     ws.freeze_panes = "B3"
@@ -489,23 +509,25 @@ def _write_scenario_dcf_col(
     col: int,
     sdcf: ScenarioDCF,
     mode: str,  # "ggm" or "exit"
+    display_unit: str,
 ) -> None:
     """Write one scenario's DCF values into a column."""
+    dfmt = _dollar_fmt(display_unit)
     if mode == "ggm":
         rows = [
-            (_m(sdcf.sum_pv_fcff),              _FMT_M),
-            (_m(sdcf.pv_terminal_value_gg),     _FMT_M),
-            (_m(sdcf.enterprise_value_gg),       _FMT_M),
-            (_m(sdcf.equity_value_gg),           _FMT_M),
-            (sdcf.price_per_share_gg,            _FMT_SH),
+            (_disp(sdcf.sum_pv_fcff,           display_unit), dfmt),
+            (_disp(sdcf.pv_terminal_value_gg,  display_unit), dfmt),
+            (_disp(sdcf.enterprise_value_gg,   display_unit), dfmt),
+            (_disp(sdcf.equity_value_gg,       display_unit), dfmt),
+            (sdcf.price_per_share_gg,                         _FMT_SH),
         ]
     else:
         rows = [
-            (_m(sdcf.sum_pv_fcff),              _FMT_M),
-            (_m(sdcf.pv_terminal_value_exit),   _FMT_M),
-            (_m(sdcf.enterprise_value_exit),     _FMT_M),
-            (_m(sdcf.equity_value_exit),         _FMT_M),
-            (sdcf.price_per_share_exit,          _FMT_SH),
+            (_disp(sdcf.sum_pv_fcff,            display_unit), dfmt),
+            (_disp(sdcf.pv_terminal_value_exit, display_unit), dfmt),
+            (_disp(sdcf.enterprise_value_exit,  display_unit), dfmt),
+            (_disp(sdcf.equity_value_exit,      display_unit), dfmt),
+            (sdcf.price_per_share_exit,                        _FMT_SH),
         ]
 
     bold_rows = {2, 3, 4, 5}   # TV, EV, equity, price
@@ -522,18 +544,21 @@ def _write_dcf_sheet(
     wb: openpyxl.Workbook,
     dcf: DCFResult,
     mode: str,   # "ggm" or "exit"
+    display_unit: str,
 ) -> None:
     sheet_name = "DCF" if mode == "ggm" else "DCF Multiple"
     tv_label   = "PV Terminal Value — Gordon Growth" if mode == "ggm" \
                  else "PV Terminal Value — Exit Multiple"
     title_suffix = "GORDON GROWTH MODEL" if mode == "ggm" else "EXIT EBITDA MULTIPLE"
+    usfx = _unit_suffix(display_unit)
+    dfmt = _dollar_fmt(display_unit)
 
     ws = wb.create_sheet(sheet_name)
     ws.column_dimensions["A"].width = 36
 
     row = 1
     _cell(ws, row, 1,
-          f"DCF VALUATION — {dcf.ticker}  |  {title_suffix}  ($ millions)",
+          f"DCF VALUATION — {dcf.ticker}  |  {title_suffix}{usfx}",
           bold=True, fill_hex=_NAVY, font_color=_WHITE)
     for c in range(2, 6):
         _cell(ws, row, c, None, fill_hex=_NAVY)
@@ -553,14 +578,21 @@ def _write_dcf_sheet(
         _cell(ws, row, 2, f"{dcf.inputs.exit_ebitda_multiple:.1f}x",
               bold=True, fill_hex=_GREY, align="right")
         row += 1
-    _cell(ws, row, 1, "Net Debt ($ millions)", bold=True, fill_hex=_GREY)
-    _cell(ws, row, 2, _m(dcf.inputs.net_debt),
-          fmt=_FMT_M, bold=True, fill_hex=_GREY, align="right")
+    net_debt_label = "Net Debt ($ millions)" if display_unit == "millions" else "Net Debt"
+    _cell(ws, row, 1, net_debt_label, bold=True, fill_hex=_GREY)
+    _cell(ws, row, 2, _disp(dcf.inputs.net_debt, display_unit),
+          fmt=dfmt, bold=True, fill_hex=_GREY, align="right")
     row += 1
-    if dcf.inputs.diluted_shares_m is not None:
-        _cell(ws, row, 1, "Diluted Shares (millions)", bold=True, fill_hex=_GREY)
-        _cell(ws, row, 2, dcf.inputs.diluted_shares_m,
-              bold=True, fill_hex=_GREY, align="right")
+    if dcf.inputs.diluted_shares is not None:
+        shares_label = "Diluted Shares (millions)" if display_unit == "millions" else "Diluted Shares"
+        _cell(ws, row, 1, shares_label, bold=True, fill_hex=_GREY)
+        # shares: divide by 1M in millions mode so "125.0" → 125M shares; raw otherwise
+        shares_disp = (dcf.inputs.diluted_shares / 1_000_000
+                       if display_unit == "millions"
+                       else dcf.inputs.diluted_shares)
+        shares_fmt = _FMT_M if display_unit == "millions" else _FMT_USD
+        _cell(ws, row, 2, shares_disp,
+              fmt=shares_fmt, bold=True, fill_hex=_GREY, align="right")
         row += 1
     row += 1
 
@@ -569,19 +601,22 @@ def _write_dcf_sheet(
     row += 1
 
     # Output row labels + values
+    def _metric_label(base: str) -> str:
+        return f"{base} ($ millions)" if display_unit == "millions" else base
+
     labels = [
-        ("Σ PV of FCFF ($ millions)",    False),
-        (tv_label + " ($ millions)",      False),
-        ("Enterprise Value ($ millions)", True),
-        ("Equity Value ($ millions)",     True),
-        ("Price Per Share",               True),
+        (_metric_label("Σ PV of FCFF"),    False),
+        (_metric_label(tv_label),           False),
+        (_metric_label("Enterprise Value"), True),
+        (_metric_label("Equity Value"),     True),
+        ("Price Per Share",                 True),
     ]
     for i, (label, is_bold) in enumerate(labels):
         fill_hex = _GREY if is_bold else None
         _cell(ws, row + i, 1, label, bold=is_bold, fill_hex=fill_hex)
 
     for col_idx, sdcf in enumerate([dcf.bear, dcf.base, dcf.bull], start=2):
-        _write_scenario_dcf_col(ws, row, col_idx, sdcf, mode)
+        _write_scenario_dcf_col(ws, row, col_idx, sdcf, mode, display_unit)
 
     ws.freeze_panes = "B3"
     _autofit(ws)
@@ -604,7 +639,7 @@ def _sensitivity_price(
                 terminal_growth_rate=param,
                 exit_ebitda_multiple=None,
                 net_debt=base_inputs.net_debt,
-                diluted_shares_m=base_inputs.diluted_shares_m,
+                diluted_shares=base_inputs.diluted_shares,
             )
         else:
             new_inputs = DCFInputs(
@@ -612,7 +647,7 @@ def _sensitivity_price(
                 terminal_growth_rate=base_inputs.terminal_growth_rate,
                 exit_ebitda_multiple=param,
                 net_debt=base_inputs.net_debt,
-                diluted_shares_m=base_inputs.diluted_shares_m,
+                diluted_shares=base_inputs.diluted_shares,
             )
         result = build_dcf(projected, new_inputs)
         return (result.base.price_per_share_gg if mode == "ggm"
@@ -626,6 +661,7 @@ def _write_sensitivity(
     projected: ProjectedStatements,
     dcf: DCFResult,
     mode: str,   # "ggm" or "exit"
+    display_unit: str,
 ) -> None:
     sheet_name = "Sensitivity - GGM" if mode == "ggm" else "Sensitivity - Exit"
     col_label  = "Terminal Growth Rate" if mode == "ggm" else "Exit EBITDA Multiple"
@@ -647,8 +683,8 @@ def _write_sensitivity(
     ws.row_dimensions[row].height = 20
     row += 1
 
-    if dcf.inputs.diluted_shares_m is None:
-        _cell(ws, row, 1, "Price per share unavailable: diluted_shares_m not provided.",
+    if dcf.inputs.diluted_shares is None:
+        _cell(ws, row, 1, "Price per share unavailable: diluted_shares not provided.",
               bold=True, font_color="FF0000")
         return
 
@@ -701,21 +737,29 @@ def export_workbook(
     projected: ProjectedStatements,
     dcf: DCFResult,
     output_path: pathlib.Path | None = None,
+    display_unit: str = "USD",
 ) -> pathlib.Path:
     """Generate and save the full DCF workbook.
 
     Args:
-        stmts:       Historical three-statement model.
-        profile:     Five-year CompanyProfile with coverage stats.
-        assumptions: ForecastAssumptions used for the projection.
-        projected:   Bear/base/bull ProjectedStatements.
-        dcf:         DCFResult with all scenario valuations.
-        output_path: Destination .xlsx path.  Defaults to
-                     ``{ticker}_DCF.xlsx`` in the current directory.
+        stmts:        Historical three-statement model.
+        profile:      Five-year CompanyProfile with coverage stats.
+        assumptions:  ForecastAssumptions used for the projection.
+        projected:    Bear/base/bull ProjectedStatements.
+        dcf:          DCFResult with all scenario valuations.
+        output_path:  Destination .xlsx path.  Defaults to
+                      ``{ticker}_DCF.xlsx`` in the current directory.
+        display_unit: Presentation unit for dollar amounts.
+                      "USD" (default) — raw values with comma formatting.
+                      "millions"      — divide by 1,000,000 for display.
+                      The internal model (DCF engine, forecasts, statements,
+                      profiles) always stores raw USD regardless of this setting.
 
     Returns:
         The resolved Path to the saved workbook.
     """
+    if display_unit not in ("USD", "millions"):
+        raise ValueError(f"display_unit must be 'USD' or 'millions', got {display_unit!r}")
     if output_path is None:
         output_path = pathlib.Path(f"{profile.ticker}_DCF.xlsx")
     output_path = pathlib.Path(output_path)
@@ -723,13 +767,13 @@ def export_workbook(
     wb = openpyxl.Workbook()
     wb.remove(wb.active)   # drop the default blank sheet
 
-    _write_summary(wb, profile, assumptions, projected, dcf)
-    _write_historical(wb, stmts, profile)
-    _write_forecast(wb, projected, assumptions)
-    _write_dcf_sheet(wb, dcf, mode="ggm")
-    _write_dcf_sheet(wb, dcf, mode="exit")
-    _write_sensitivity(wb, projected, dcf, mode="ggm")
-    _write_sensitivity(wb, projected, dcf, mode="exit")
+    _write_summary(wb, profile, assumptions, projected, dcf, display_unit)
+    _write_historical(wb, stmts, profile, display_unit)
+    _write_forecast(wb, projected, assumptions, display_unit)
+    _write_dcf_sheet(wb, dcf, mode="ggm", display_unit=display_unit)
+    _write_dcf_sheet(wb, dcf, mode="exit", display_unit=display_unit)
+    _write_sensitivity(wb, projected, dcf, mode="ggm", display_unit=display_unit)
+    _write_sensitivity(wb, projected, dcf, mode="exit", display_unit=display_unit)
 
     wb.save(output_path)
     return output_path

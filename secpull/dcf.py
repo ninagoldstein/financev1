@@ -13,7 +13,10 @@ GGM is always computed; exit multiple is computed only when supplied.
 
 Equity bridge:
   Equity Value = Enterprise Value − Net Debt
-  Price / Share = Equity Value / diluted_shares_m
+  Price / Share = Equity Value / diluted_shares
+
+All dollar amounts are raw USD throughout (same units as the FCFF stream).
+diluted_shares is the actual share count (e.g. 125_000_000, not 125.0).
 
 Net Debt convention:
   Positive → company has more debt than cash (reduces equity value)
@@ -38,8 +41,8 @@ class DCFInputs:
     wacc: float                         # discount rate (e.g. 0.10 = 10%)
     terminal_growth_rate: float         # Gordon Growth perpetuity rate (e.g. 0.025)
     exit_ebitda_multiple: float | None = None  # if set, also computes exit-multiple TV
-    net_debt: float = 0.0               # long_term_debt − cash; positive = net debt
-    diluted_shares_m: float | None = None  # shares in millions; None → no price/share
+    net_debt: float = 0.0               # long_term_debt − cash; positive = net debt; raw USD
+    diluted_shares: float | None = None  # actual share count (e.g. 125_000_000); None → no price
 
 
 # ── Per-scenario output ───────────────────────────────────────────────────────
@@ -105,11 +108,9 @@ def _compute_scenario_dcf(
 
     ev_gg = sum_pv + pv_tv_gg
     equity_gg = ev_gg - inputs.net_debt
-    # diluted_shares_m is in millions (e.g. 125 = 125M shares); convert to
-    # actual share count so price is in $/share (same unit as equity raw USD).
     price_gg = (
-        equity_gg / (inputs.diluted_shares_m * 1_000_000)
-        if inputs.diluted_shares_m is not None
+        equity_gg / inputs.diluted_shares
+        if inputs.diluted_shares is not None
         else None
     )
 
@@ -127,8 +128,8 @@ def _compute_scenario_dcf(
         ev_exit = sum_pv + pv_tv_exit
         equity_exit = ev_exit - inputs.net_debt
         price_exit = (
-            equity_exit / (inputs.diluted_shares_m * 1_000_000)
-            if inputs.diluted_shares_m is not None
+            equity_exit / inputs.diluted_shares
+            if inputs.diluted_shares is not None
             else None
         )
 
@@ -171,10 +172,10 @@ def build_dcf(
             f"({inputs.terminal_growth_rate:.2%}); Gordon Growth denominator would "
             f"be zero or negative."
         )
-    if inputs.diluted_shares_m is not None and inputs.diluted_shares_m <= 0:
+    if inputs.diluted_shares is not None and inputs.diluted_shares <= 0:
         raise ValueError(
-            f"diluted_shares_m must be positive when provided, "
-            f"got {inputs.diluted_shares_m}."
+            f"diluted_shares must be positive when provided, "
+            f"got {inputs.diluted_shares}."
         )
     if inputs.exit_ebitda_multiple is not None and inputs.exit_ebitda_multiple <= 0:
         raise ValueError(

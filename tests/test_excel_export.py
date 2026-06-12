@@ -61,8 +61,8 @@ def lulu_pipeline():
         wacc=0.10,
         terminal_growth_rate=0.025,
         exit_ebitda_multiple=10.0,
-        net_debt=-1_500e6,        # -$1.5B net cash in raw USD (same units as FCFF)
-        diluted_shares_m=125.0,
+        net_debt=-1_500e6,        # -$1.5B net cash in raw USD
+        diluted_shares=125_000_000,  # actual share count
     )
     dcf = build_dcf(proj, inputs)
     return stmts, profile, asmp, proj, dcf
@@ -378,8 +378,8 @@ def test_integration_other_companies(ticker, cik, name, tmp_path):
         wacc=0.10,
         terminal_growth_rate=0.025,
         exit_ebitda_multiple=8.0,
-        net_debt=20_000e6,        # $20B net debt in raw USD
-        diluted_shares_m=1_000.0,
+        net_debt=20_000e6,           # $20B net debt in raw USD
+        diluted_shares=1_000_000_000,  # actual share count
     )
     dcf  = build_dcf(proj, inputs)
     path = export_workbook(stmts, profile, asmp, proj, dcf,
