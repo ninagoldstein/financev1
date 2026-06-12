@@ -15,6 +15,10 @@ coverage_quality values stored in financials and derived_financials tables:
 
 STRUCTURAL_GAP, STALE, and UNRELIABLE are not stored per-row; they are computed
 at audit/scorecard time from the rules below.
+
+Freshness rule: any metric whose latest FY data point is older than
+STALE_THRESHOLD is classified as STALE and excluded from coverage counts,
+regardless of its stored coverage_quality value.
 """
 
 COMPLETE       = "COMPLETE"
@@ -23,6 +27,27 @@ DERIVED        = "DERIVED"
 STRUCTURAL_GAP = "STRUCTURAL_GAP"
 STALE          = "STALE"
 UNRELIABLE     = "UNRELIABLE"
+
+# Metrics with max(fiscal_year) < STALE_THRESHOLD are classified STALE at audit time.
+STALE_THRESHOLD = 2024
+
+
+def classify_freshness(facts: list) -> dict[str, str]:
+    """Return {metric: STALE} for every metric whose latest FY < STALE_THRESHOLD.
+
+    Only FY (annual) periods are considered — quarterly points do not affect the
+    freshness classification of a metric.
+    """
+    max_fy: dict[str, int] = {}
+    for f in facts:
+        if f.fiscal_period == "FY":
+            if f.metric not in max_fy or f.fiscal_year > max_fy[f.metric]:
+                max_fy[f.metric] = f.fiscal_year
+    return {
+        metric: STALE
+        for metric, latest_fy in max_fy.items()
+        if latest_fy < STALE_THRESHOLD
+    }
 
 # Tags that return data covering the metric definition but with known
 # economic limitations.  When pick_tag selects one of these, coverage_quality
