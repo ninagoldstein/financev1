@@ -15,11 +15,44 @@ def _fiscal_year_from_end(end_date: str) -> int:
     return year - 1 if month <= 2 else year
 
 
+def _latest_annual_end(pts: list[dict]) -> str | None:
+    """Latest 'end' date among annual FY 10-K points, or None."""
+    dates = [
+        p["end"] for p in pts
+        if p.get("form") == "10-K" and p.get("fp") == "FY"
+           and _REQUIRED_FIELDS.issubset(p)
+    ]
+    return max(dates) if dates else None
+
+
 def pick_tag(facts_usgaap: dict, candidates: list[str], unit: str) -> str | None:
+    """Select the candidate tag whose most recent annual 10-K data is newest.
+
+    Companies occasionally switch between equivalent XBRL tags across filings.
+    Choosing by recency ensures we follow the tag the company currently uses
+    rather than whichever appears first in the candidates list.
+
+    Ties (same latest date) are broken by candidate order — first listed wins.
+    Candidates with no annual 10-K data fall back in candidate order after all
+    candidates with annual data.
+    """
+    best_tag: str | None = None
+    best_end: str | None = None
+    fallback: str | None = None
+
     for tag in candidates:
-        if facts_usgaap.get(tag, {}).get("units", {}).get(unit):
-            return tag
-    return None
+        pts = facts_usgaap.get(tag, {}).get("units", {}).get(unit, [])
+        if not pts:
+            continue
+        latest = _latest_annual_end(pts)
+        if latest is not None:
+            if best_end is None or latest > best_end:
+                best_tag = tag
+                best_end = latest
+        elif fallback is None:
+            fallback = tag
+
+    return best_tag if best_tag is not None else fallback
 
 
 def dedupe_latest_filed(points: list[dict]) -> list[dict]:

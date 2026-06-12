@@ -17,6 +17,60 @@ def test_pick_tag_none_when_absent():
     assert pick_tag({}, ["Revenues"], "USD") is None
 
 
+def test_pick_tag_prefers_more_recent_annual():
+    """Tag with newer annual 10-K data wins even when listed second."""
+    facts = {
+        "OldTag": {"units": {"USD": [_pt("2020-12-31", 1.0e9, 2020, "FY", "10-K", "2021-02-01")]}},
+        "NewTag": {"units": {"USD": [_pt("2024-12-31", 2.0e9, 2024, "FY", "10-K", "2025-02-01")]}},
+    }
+    assert pick_tag(facts, ["OldTag", "NewTag"], "USD") == "NewTag"
+
+
+def test_pick_tag_order_breaks_tie_when_same_recency():
+    """First-listed candidate wins when both share the same latest annual date."""
+    facts = {
+        "TagA": {"units": {"USD": [_pt("2024-12-31", 1.0e9, 2024, "FY", "10-K", "2025-02-01")]}},
+        "TagB": {"units": {"USD": [_pt("2024-12-31", 2.0e9, 2024, "FY", "10-K", "2025-02-01")]}},
+    }
+    assert pick_tag(facts, ["TagA", "TagB"], "USD") == "TagA"
+
+
+def test_pick_tag_meta_net_income_pattern():
+    """META: first candidate has FY2020 data only; second has FY2025 — second wins."""
+    facts = {
+        "NetIncomeLossAvailableToCommonStockholdersBasic": {
+            "units": {"USD": [_pt("2020-12-31", 29.0e9, 2020, "FY", "10-K", "2021-01-28")]}
+        },
+        "NetIncomeLoss": {
+            "units": {"USD": [_pt("2025-12-31", 60.5e9, 2025, "FY", "10-K", "2026-01-29")]}
+        },
+    }
+    tag = pick_tag(
+        facts,
+        ["NetIncomeLossAvailableToCommonStockholdersBasic", "NetIncomeLoss"],
+        "USD",
+    )
+    assert tag == "NetIncomeLoss"
+
+
+def test_pick_tag_ford_net_income_pattern():
+    """Ford: first candidate has FY2025 data; second stopped at FY2023 — first wins."""
+    facts = {
+        "NetIncomeLossAvailableToCommonStockholdersBasic": {
+            "units": {"USD": [_pt("2025-12-31", -8.182e9, 2025, "FY", "10-K", "2026-02-01")]}
+        },
+        "NetIncomeLoss": {
+            "units": {"USD": [_pt("2023-12-31", 4.3e9, 2023, "FY", "10-K", "2024-02-06")]}
+        },
+    }
+    tag = pick_tag(
+        facts,
+        ["NetIncomeLossAvailableToCommonStockholdersBasic", "NetIncomeLoss"],
+        "USD",
+    )
+    assert tag == "NetIncomeLossAvailableToCommonStockholdersBasic"
+
+
 def test_dedupe_keeps_latest_filed():
     a = _pt("2024-01-28", 9.0e9, 2023, "FY", "10-K", "2024-03-21")
     b = _pt("2024-01-28", 9.6e9, 2023, "FY", "10-K", "2025-03-20")  # restated

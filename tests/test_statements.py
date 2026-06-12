@@ -353,11 +353,18 @@ def test_integration_vz_total_liabilities_derived():
     assert abs(tl.values[2025].value - 298.5e9) < 1e9
 
 
-def test_integration_ford_interest_expense_is_stale():
+def test_integration_ford_interest_expense_is_unreliable():
+    # pick_tag selects InterestExpenseNonoperating (FY2025) by recency — it has
+    # current data so is_stale=False. But ("F", "interest_expense") is in
+    # UNRELIABLE_METRICS because it captures only non-operating interest (~$1.25B),
+    # missing Ford Credit's embedded ~$6-7B. Quality flag must be UNRELIABLE.
     cik = "0000037996"
     with open(config.DATA_DIR / "raw" / f"{cik}.json") as f:
         payload = __import__("json").load(f)
     facts = extract_metrics(cik, payload)
     derived = compute_derived_metrics(cik, facts)
     stmts = build_statements(cik, "F", facts, derived)
-    assert stmts.income_statement.interest_expense.is_stale is True
+    line = stmts.income_statement.interest_expense
+    assert line.is_stale is False
+    assert line.values  # has data
+    assert all(pt.coverage_quality == "UNRELIABLE" for pt in line.values.values())

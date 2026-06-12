@@ -62,9 +62,10 @@ METRIC_TAGS: dict[str, list[str]] = {
         "InterestExpenseNonoperating",
     ],
     "income_tax_expense": ["IncomeTaxExpenseBenefit", "IncomeTaxExpense"],
-    # NetIncomeLossAvailableToCommonStockholdersBasic first: Ford stopped tagging
-    # NetIncomeLoss after FY2024; FY2025 loss (-$8.182B) only in the Available tag.
-    # LULU and VZ have no data in this tag → safe fallthrough to NetIncomeLoss.
+    # pick_tag selects whichever candidate has the most recent annual 10-K data.
+    # Ford uses NetIncomeLossAvailableToCommonStockholdersBasic for FY2025+;
+    # META uses NetIncomeLoss for FY2021+. Both are handled correctly by recency.
+    # Ordering here is a tie-breaker only (same latest date → first listed wins).
     "net_income": [
         "NetIncomeLossAvailableToCommonStockholdersBasic",
         "NetIncomeLoss",
