@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from secpull.models import METRIC_TAGS as _METRIC_TAGS
+
 from secpull.models import DerivedFact, FinancialFact
 from secpull.quality import (
     COMPLETE,
@@ -138,6 +140,10 @@ class HistoricalStatements:
     income_statement: IncomeStatement
     balance_sheet: BalanceSheet
     cash_flow_statement: CashFlowStatement
+    # Complete coverage of all canonical metrics — the three-statement views
+    # above are the condensed display form; all_lines is used by the profile
+    # layer for coverage counting and ratio computation.
+    all_lines: dict[str, StatementLine] = field(default_factory=dict)
 
 
 # ── Builder ───────────────────────────────────────────────────────────────────
@@ -319,6 +325,16 @@ def build_statements(
         fcf=_line("Free Cash Flow", "fcf"),
     )
 
+    # Build comprehensive metric lookup for all 46 canonical metrics
+    all_lines: dict[str, StatementLine] = {}
+    for metric in _METRIC_TAGS:
+        # Reuse any line already built for the condensed statements; for metrics
+        # not shown there (short_term_debt, WC components, etc.) build fresh.
+        all_lines[metric] = _line(
+            label=metric.replace("_", " ").title(),
+            metric=metric,
+        )
+
     return HistoricalStatements(
         ticker=ticker,
         cik=cik,
@@ -326,4 +342,5 @@ def build_statements(
         income_statement=is_stmt,
         balance_sheet=bs,
         cash_flow_statement=cfs,
+        all_lines=all_lines,
     )
