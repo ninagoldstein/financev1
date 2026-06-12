@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -21,6 +21,7 @@ class FinancialFact:
     form: str
     end_date: str
     filed_date: str
+    coverage_quality: str = "COMPLETE"   # COMPLETE | PARTIAL
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,8 @@ class DerivedFact:
     fiscal_period: str
     form: str
     end_date: str
-    coverage_flag: str           # "complete" | "partial" | "missing"
+    coverage_flag: str           # "complete" | "partial" | "missing" (input completeness)
+    coverage_quality: str = "DERIVED"    # DERIVED | PARTIAL | UNRELIABLE
 
 
 METRIC_TAGS: dict[str, list[str]] = {
@@ -53,15 +55,35 @@ METRIC_TAGS: dict[str, list[str]] = {
         "DepreciationAndAmortization",
         "Depreciation",
     ],
-    "interest_expense": ["InterestExpense", "InterestAndDebtExpense"],
+    "interest_expense": [
+        "InterestExpense",
+        "InterestAndDebtExpense",
+        # PARTIAL: non-operating interest only; misses Ford Credit and similar
+        "InterestExpenseNonoperating",
+    ],
     "income_tax_expense": ["IncomeTaxExpenseBenefit", "IncomeTaxExpense"],
-    "net_income": ["NetIncomeLoss"],
+    # NetIncomeLossAvailableToCommonStockholdersBasic first: Ford stopped tagging
+    # NetIncomeLoss after FY2024; FY2025 loss (-$8.182B) only in the Available tag.
+    # LULU and VZ have no data in this tag → safe fallthrough to NetIncomeLoss.
+    "net_income": [
+        "NetIncomeLossAvailableToCommonStockholdersBasic",
+        "NetIncomeLoss",
+    ],
     "eps_diluted": ["EarningsPerShareDiluted"],
     "shares_diluted": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
 
     # ── Balance Sheet — Assets ────────────────────────────────────────────────
-    "cash": ["CashAndCashEquivalentsAtCarryingValue"],
+    # PARTIAL: includes restricted cash (~$400-500M for Ford/VZ); adopted by many
+    # companies post-ASC 230 as their primary cash tag.  LULU stopped tagging
+    # CashAndCashEquivalentsAtCarryingValue after FY2019.
+    "cash": [
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "CashAndCashEquivalentsAtCarryingValue",
+    ],
+    # PARTIAL: AccountsNotesAndLoansReceivableNetCurrent includes device
+    # installment plan notes (~$15B of VZ's $27B); not pure trade AR.
     "accounts_receivable": [
+        "AccountsNotesAndLoansReceivableNetCurrent",
         "AccountsReceivableNetCurrent",
         "ReceivablesNetCurrent",
     ],
@@ -71,9 +93,11 @@ METRIC_TAGS: dict[str, list[str]] = {
         "OtherAssetsCurrent",
     ],
     "total_current_assets": ["AssetsCurrent"],
+    # Finance-lease ROU tag first: Ford switched to it in FY2025; LULU and VZ
+    # have no data in this tag → safe fallthrough to PropertyPlantAndEquipmentNet.
     "ppe_net": [
-        "PropertyPlantAndEquipmentNet",
         "PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization",
+        "PropertyPlantAndEquipmentNet",
     ],
     "goodwill": ["Goodwill"],
     "intangibles_net": [
@@ -140,7 +164,10 @@ METRIC_TAGS: dict[str, list[str]] = {
         "IncreaseDecreaseInDeferredRevenue",
         "IncreaseDecreaseInContractWithCustomerLiability",
     ],
+    # PaymentsToAcquireOtherProductiveAssets first: VZ migrated to this tag
+    # after FY2018; LULU and Ford have no data → safe fallthrough.
     "capex": [
+        "PaymentsToAcquireOtherProductiveAssets",
         "PaymentsToAcquirePropertyPlantAndEquipment",
         "PaymentsToAcquireProductiveAssets",
     ],
@@ -148,7 +175,12 @@ METRIC_TAGS: dict[str, list[str]] = {
     "cfo": ["NetCashProvidedByUsedInOperatingActivities"],
     "cfi": ["NetCashProvidedByUsedInInvestingActivities"],
     "cff": ["NetCashProvidedByUsedInFinancingActivities"],
-    "debt_repayment": ["RepaymentsOfLongTermDebt"],
+    # RepaymentsOfDebt first: VZ migrated to this tag after FY2011;
+    # LULU and Ford have no data in this tag → safe fallthrough.
+    "debt_repayment": [
+        "RepaymentsOfDebt",
+        "RepaymentsOfLongTermDebt",
+    ],
     "share_repurchases": ["PaymentsForRepurchaseOfCommonStock"],
     "dividends_paid": ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock"],
 }

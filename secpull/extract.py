@@ -1,4 +1,5 @@
 from secpull.models import FinancialFact, METRIC_TAGS
+from secpull.quality import COMPLETE, PARTIAL, PARTIAL_QUALITY_TAGS
 
 ACCEPTED_UNITS = {
     "eps_diluted": "USD/shares",
@@ -45,6 +46,7 @@ def extract_metrics(cik: str, payload: dict) -> list[FinancialFact]:
             if _REQUIRED_FIELDS.issubset(pt) and pt["form"] in _VALID_FORMS
         ]
 
+        quality = PARTIAL_QUALITY_TAGS.get(tag, COMPLETE)
         for pt in dedupe_latest_filed(valid):
             results.append(FinancialFact(
                 cik=cik,
@@ -57,6 +59,7 @@ def extract_metrics(cik: str, payload: dict) -> list[FinancialFact]:
                 form=pt["form"],
                 end_date=pt["end"],
                 filed_date=pt["filed"],
+                coverage_quality=quality,
             ))
 
     return results
