@@ -1,6 +1,9 @@
 from secpull.models import FinancialFact, METRIC_TAGS
 
-ACCEPTED_UNITS = {"eps_diluted": "USD/shares"}
+ACCEPTED_UNITS = {
+    "eps_diluted": "USD/shares",
+    "shares_diluted": "shares",
+}
 _VALID_FORMS = {"10-K", "10-Q"}
 _REQUIRED_FIELDS = {"val", "fy", "fp", "form", "end", "filed"}
 
