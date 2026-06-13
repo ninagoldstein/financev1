@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from secpull.normalize import AssumptionDetail, normalize_series, clamp_detail
 from secpull.profile import CompanyProfile
 from secpull.quality import QualityIssue
 
@@ -72,8 +73,25 @@ class ForecastAssumptions:
     # Quality carry-forward from profile
     quality_issues: tuple[QualityIssue, ...] = ()
 
+    # Full normalization breakdown — None when built without a profile series
+    # (e.g. in unit tests that construct ForecastAssumptions directly).
+    revenue_growth_detail: AssumptionDetail | None = None
+    ebit_margin_detail:    AssumptionDetail | None = None
+    da_pct_detail:         AssumptionDetail | None = None
+    capex_pct_detail:      AssumptionDetail | None = None
+    tax_rate_detail:       AssumptionDetail | None = None
+    nwc_pct_detail:        AssumptionDetail | None = None
+
 
 # ── Builder ───────────────────────────────────────────────────────────────────
+
+
+def _series_vals(series: tuple[tuple[int, float], ...]) -> tuple[list[float], list[int]]:
+    """Unzip a (year, value) series into parallel lists."""
+    if not series:
+        return [], []
+    years, vals = zip(*series)
+    return list(vals), list(years)
 
 
 def build_assumptions_from_profile(
@@ -82,73 +100,93 @@ def build_assumptions_from_profile(
 ) -> ForecastAssumptions:
     """Derive ForecastAssumptions from historical CompanyProfile averages.
 
-    Precedence: override > profile historical average > fallback default.
-    Clamping is applied after overrides so all values are in-range.
+    Each assumption is computed via normalize_series() which returns windowed
+    averages (5yr, 3yr, 2yr, most-recent) and an outlier-adjusted mean using a
+    leave-one-out z-score threshold of 2σ.  The outlier-adjusted (normalized)
+    mean becomes the selected_value — temporary events (restructurings, capex
+    spikes, COVID impacts) are automatically excluded from the base case.
 
-    Args:
-        profile:   Built by build_profile(); provides historical averages.
-        overrides: Optional dict mapping ForecastAssumptions field names to
-                   replacement float values.  Unknown keys are silently ignored.
+    Precedence: explicit override > normalized average > fallback default.
+    Clamping is applied to the float fields; AssumptionDetail.selected_value
+    reflects the post-clamp value.
     """
     ov = overrides or {}
 
-    # ── Revenue growth: base from avg YoY, fall back to CAGR, then 3% ─────────
-    base = (
-        profile.avg_revenue_growth.value
-        if profile.avg_revenue_growth.value is not None
+    # ── Revenue growth ────────────────────────────────────────────────────────
+    rg_vals, rg_years = _series_vals(profile.revenue_growth_series)
+    rg_detail = normalize_series(rg_vals, rg_years, "revenue_growth")
+    normalized_base = (
+        rg_detail.normalized
+        if rg_detail.normalized is not None
         else profile.revenue_cagr.value
         if profile.revenue_cagr.value is not None
-        else _SPREAD   # 3% default
+        else _SPREAD
     )
-    base_growth = float(ov.get("base_revenue_growth", base))
+    base_growth = float(ov.get("base_revenue_growth", normalized_base))
     bear_growth = float(ov.get("bear_revenue_growth", base_growth - _SPREAD))
     bull_growth = float(ov.get("bull_revenue_growth", base_growth + _SPREAD))
+    # Rebuild detail with final selected_value in case override was used
+    revenue_growth_detail = AssumptionDetail(
+        historical_5y=rg_detail.historical_5y,
+        historical_3y=rg_detail.historical_3y,
+        historical_2y=rg_detail.historical_2y,
+        most_recent=rg_detail.most_recent,
+        normalized=rg_detail.normalized,
+        selected_value=base_growth,
+        rationale=rg_detail.rationale,
+        outlier_years=rg_detail.outlier_years,
+        outlier_notes=rg_detail.outlier_notes,
+    )
 
-    # ── Margins ───────────────────────────────────────────────────────────────
+    # ── Gross margin (no normalization — structural, not vol.) ────────────────
     gm_raw = profile.avg_gross_margin.value
     gross_margin: float | None = (
         float(ov["gross_margin"]) if "gross_margin" in ov
-        else gm_raw   # may remain None
+        else gm_raw
     )
 
-    em_raw = profile.avg_ebit_margin.value
-    ebit_margin = float(ov.get(
-        "ebit_margin",
-        em_raw if em_raw is not None else _FALLBACK_EBIT_MARGIN,
-    ))
+    # ── EBIT margin ───────────────────────────────────────────────────────────
+    em_vals, em_years = _series_vals(profile.ebit_margin_series)
+    em_detail = normalize_series(em_vals, em_years, "ebit_margin")
+    em_normalized = em_detail.normalized if em_detail.normalized is not None else _FALLBACK_EBIT_MARGIN
+    ebit_margin = float(ov.get("ebit_margin", em_normalized))
 
     # ── Tax rate ───────────────────────────────────────────────────────────────
-    tr_raw = profile.avg_effective_tax_rate.value
-    effective_tax_rate = _clamp(
-        "effective_tax_rate",
-        float(ov.get(
-            "effective_tax_rate",
-            tr_raw if tr_raw is not None else _FALLBACK_TAX_RATE,
-        )),
+    tr_vals, tr_years = _series_vals(profile.tax_rate_series)
+    tr_detail = normalize_series(tr_vals, tr_years, "effective_tax_rate")
+    tr_normalized = tr_detail.normalized if tr_detail.normalized is not None else _FALLBACK_TAX_RATE
+    tr_raw_val = float(ov.get("effective_tax_rate", tr_normalized))
+    effective_tax_rate = _clamp("effective_tax_rate", tr_raw_val)
+    tr_detail = clamp_detail(
+        _rebuild(tr_detail, tr_raw_val),
+        *_CLAMP["effective_tax_rate"],
     )
 
-    # ── Cash flow drivers ─────────────────────────────────────────────────────
-    da_raw = profile.avg_da_pct_revenue.value
-    da_pct_revenue = _clamp(
-        "da_pct_revenue",
-        float(ov.get("da_pct_revenue", da_raw if da_raw is not None else 0.0)),
-    )
+    # ── D&A % revenue ─────────────────────────────────────────────────────────
+    da_vals, da_years = _series_vals(profile.da_pct_series)
+    da_detail_raw = normalize_series(da_vals, da_years, "da_pct_revenue")
+    da_normalized = da_detail_raw.normalized if da_detail_raw.normalized is not None else 0.0
+    da_raw_val = float(ov.get("da_pct_revenue", da_normalized))
+    da_pct_revenue = _clamp("da_pct_revenue", da_raw_val)
+    da_detail = clamp_detail(_rebuild(da_detail_raw, da_raw_val), *_CLAMP["da_pct_revenue"])
 
-    cx_raw = profile.avg_capex_pct_revenue.value
-    capex_pct_revenue = _clamp(
-        "capex_pct_revenue",
-        float(ov.get("capex_pct_revenue", cx_raw if cx_raw is not None else 0.0)),
-    )
+    # ── Capex % revenue ───────────────────────────────────────────────────────
+    cx_vals, cx_years = _series_vals(profile.capex_pct_series)
+    cx_detail_raw = normalize_series(cx_vals, cx_years, "capex_pct_revenue")
+    cx_normalized = cx_detail_raw.normalized if cx_detail_raw.normalized is not None else 0.0
+    cx_raw_val = float(ov.get("capex_pct_revenue", cx_normalized))
+    capex_pct_revenue = _clamp("capex_pct_revenue", cx_raw_val)
+    cx_detail = clamp_detail(_rebuild(cx_detail_raw, cx_raw_val), *_CLAMP["capex_pct_revenue"])
 
-    nwc_raw = profile.avg_nwc_pct_revenue.value
-    nwc_pct_revenue = _clamp(
-        "nwc_pct_revenue",
-        float(ov.get("nwc_pct_revenue", nwc_raw if nwc_raw is not None else 0.0)),
-    )
+    # ── NWC % revenue ─────────────────────────────────────────────────────────
+    nwc_vals, nwc_years = _series_vals(profile.nwc_pct_series)
+    nwc_detail_raw = normalize_series(nwc_vals, nwc_years, "nwc_pct_revenue")
+    nwc_normalized = nwc_detail_raw.normalized if nwc_detail_raw.normalized is not None else 0.0
+    nwc_raw_val = float(ov.get("nwc_pct_revenue", nwc_normalized))
+    nwc_pct_revenue = _clamp("nwc_pct_revenue", nwc_raw_val)
+    nwc_detail = clamp_detail(_rebuild(nwc_detail_raw, nwc_raw_val), *_CLAMP["nwc_pct_revenue"])
 
-    # ── Debt cost — not estimable from income statement alone ─────────────────
-    # Placeholder: user must supply via override.  Could be estimated as
-    # interest_expense / avg_debt in a future enhancement.
+    # ── Debt cost ─────────────────────────────────────────────────────────────
     interest_rate_on_debt: float | None = ov.get("interest_rate_on_debt", None)
     if interest_rate_on_debt is not None:
         interest_rate_on_debt = float(interest_rate_on_debt)
@@ -172,4 +210,16 @@ def build_assumptions_from_profile(
         interest_rate_on_debt=interest_rate_on_debt,
         n_projection_years=n_projection_years,
         quality_issues=quality_issues,
+        revenue_growth_detail=revenue_growth_detail,
+        ebit_margin_detail=_rebuild(em_detail, ebit_margin),
+        da_pct_detail=da_detail,
+        capex_pct_detail=cx_detail,
+        tax_rate_detail=tr_detail,
+        nwc_pct_detail=nwc_detail,
     )
+
+
+def _rebuild(detail: AssumptionDetail, selected_value: float) -> AssumptionDetail:
+    """Return a copy of detail with selected_value replaced."""
+    from dataclasses import replace as _replace
+    return _replace(detail, selected_value=selected_value)

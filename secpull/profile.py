@@ -90,6 +90,15 @@ class CompanyProfile:
     # Leverage
     avg_net_debt_to_ebitda: Ratio
 
+    # Per-year raw series for normalization layer (year, value) pairs, non-None only.
+    # Used by build_assumptions_from_profile to detect outliers.
+    revenue_growth_series: tuple[tuple[int, float], ...]   # year = growth ended in that FY
+    ebit_margin_series:    tuple[tuple[int, float], ...]
+    da_pct_series:         tuple[tuple[int, float], ...]
+    capex_pct_series:      tuple[tuple[int, float], ...]
+    tax_rate_series:       tuple[tuple[int, float], ...]
+    nwc_pct_series:        tuple[tuple[int, float], ...]
+
     # Coverage counts
     raw_coverage_pct: float         # n_populated / 46
     adj_coverage_pct: float         # n_populated / (46 - gaps - stale)
@@ -372,6 +381,11 @@ def build_profile(
     rev_vals = _vals(is_.revenue, years)
     yoy_rates = _yoy_growth(rev_vals)
     avg_rev_growth = Ratio(value=_avg(yoy_rates[1:]))
+    rev_growth_series: tuple[tuple[int, float], ...] = tuple(
+        (yr, rate)
+        for yr, rate in zip(years, yoy_rates)
+        if rate is not None
+    )
 
     first_rev = next((v for v in rev_vals if v is not None), None)
     last_rev = next((v for v in reversed(rev_vals) if v is not None), None)
@@ -383,9 +397,13 @@ def build_profile(
         value=_avg(_ratio_series(is_.gross_profit, is_.revenue, years)),
         note=_quality_note([is_.gross_profit, is_.revenue], "gross_margin"),
     )
+    _ebit_margin_raw = _ratio_series(is_.ebit, is_.revenue, years)
     avg_ebit_margin = Ratio(
-        value=_avg(_ratio_series(is_.ebit, is_.revenue, years)),
+        value=_avg(_ebit_margin_raw),
         note=_quality_note([is_.ebit, is_.revenue], "ebit_margin"),
+    )
+    ebit_margin_series: tuple[tuple[int, float], ...] = tuple(
+        (yr, v) for yr, v in zip(years, _ebit_margin_raw) if v is not None
     )
     avg_ebitda_margin = Ratio(
         value=_avg(_ratio_series(is_.ebitda, is_.revenue, years)),
@@ -415,23 +433,38 @@ def build_profile(
         value=_avg(tax_series),
         note=_quality_note([is_.interest_expense], "effective_tax_rate"),
     )
+    tax_rate_series: tuple[tuple[int, float], ...] = tuple(
+        (yr, v) for yr, v in zip(years, tax_series) if v is not None
+    )
 
     # ── Cash flow drivers ─────────────────────────────────────────────────────
+    _da_pct_raw = _ratio_series(is_.da, is_.revenue, years)
     avg_da_pct = Ratio(
-        value=_avg(_ratio_series(is_.da, is_.revenue, years)),
+        value=_avg(_da_pct_raw),
         note=_quality_note([is_.da], "da_pct_revenue"),
     )
+    da_pct_series: tuple[tuple[int, float], ...] = tuple(
+        (yr, v) for yr, v in zip(years, _da_pct_raw) if v is not None
+    )
+
+    _capex_pct_raw = _ratio_series(cfs.capex, is_.revenue, years)
     avg_capex_pct = Ratio(
-        value=_avg(_ratio_series(cfs.capex, is_.revenue, years)),
+        value=_avg(_capex_pct_raw),
         note=_quality_note([cfs.capex], "capex_pct_revenue"),
+    )
+    capex_pct_series: tuple[tuple[int, float], ...] = tuple(
+        (yr, v) for yr, v in zip(years, _capex_pct_raw) if v is not None
     )
 
     nwc_vals = _operating_nwc(bs, years)
-    nwc_pct_series: list[float | None] = [
+    _nwc_pct_raw: list[float | None] = [
         nwc / rev if (nwc is not None and rev is not None and rev != 0) else None
         for nwc, rev in zip(nwc_vals, rev_vals)
     ]
-    avg_nwc_pct = Ratio(value=_avg(nwc_pct_series))
+    avg_nwc_pct = Ratio(value=_avg(_nwc_pct_raw))
+    nwc_pct_series: tuple[tuple[int, float], ...] = tuple(
+        (yr, v) for yr, v in zip(years, _nwc_pct_raw) if v is not None
+    )
 
     # ── Net debt / EBITDA ─────────────────────────────────────────────────────
     nd_series: list[float | None] = []
@@ -492,6 +525,12 @@ def build_profile(
         avg_capex_pct_revenue=avg_capex_pct,
         avg_nwc_pct_revenue=avg_nwc_pct,
         avg_net_debt_to_ebitda=avg_nd_ebitda,
+        revenue_growth_series=rev_growth_series,
+        ebit_margin_series=ebit_margin_series,
+        da_pct_series=da_pct_series,
+        capex_pct_series=capex_pct_series,
+        tax_rate_series=tax_rate_series,
+        nwc_pct_series=nwc_pct_series,
         raw_coverage_pct=raw_pct,
         adj_coverage_pct=adj_pct,
         n_complete=n_complete,
