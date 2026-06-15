@@ -19,6 +19,9 @@ return averages with no outlier analysis.
 AssumptionDetail is the output type.  It stores all computed averages,
 the outlier metadata, and the selected_value that the DCF layer uses
 (= normalized average, clamped by the caller if needed).
+
+select_from_detail() lets callers switch the selection mode after the fact.
+MODES lists all valid mode strings.
 """
 from __future__ import annotations
 
@@ -27,6 +30,15 @@ from dataclasses import dataclass, replace
 
 OUTLIER_SIGMA: float = 2.0   # LOO z-score threshold for outlier flagging
 _MIN_LOO: int = 4            # minimum observations for LOO detection
+
+MODES: tuple[str, ...] = (
+    "normalized",       # outlier-adjusted average (default)
+    "raw_5y",           # simple 5-year mean
+    "recent_3y",        # 3-year mean of most-recent years
+    "recent_2y",        # 2-year mean of most-recent years
+    "most_recent",      # single latest-year value
+    "manual_override",  # analyst-supplied value
+)
 
 
 # ── Output type ───────────────────────────────────────────────────────────────
@@ -44,6 +56,8 @@ class AssumptionDetail:
     rationale: str                   # why selected_value was chosen
     outlier_years: tuple[int, ...]   # FY years flagged as outliers
     outlier_notes: tuple[str, ...]   # one explanation per outlier year
+    mode: str = "normalized"         # which MODES entry drove selected_value
+    manual_value: float | None = None  # non-None only when mode="manual_override"
 
 
 # ── Internal math ─────────────────────────────────────────────────────────────
@@ -181,4 +195,81 @@ def clamp_detail(
         detail,
         selected_value=clamped,
         rationale=f"{detail.rationale} Clamped to {bound} bound ({clamped:{fmt}}).",
+    )
+
+
+def select_from_detail(
+    detail: AssumptionDetail,
+    mode: str,
+    manual_value: float | None = None,
+    fmt: str = ".1%",
+) -> AssumptionDetail:
+    """Apply an assumption mode to an already-computed AssumptionDetail.
+
+    Returns a copy with selected_value, rationale, mode, and manual_value
+    updated to reflect the chosen mode.  For manual_override the rationale
+    explicitly states the analyst value and the statistical baseline so the
+    audit trail is unambiguous.
+
+    Args:
+        detail:       Output from normalize_series() (or a prior select_from_detail call).
+        mode:         One of MODES.
+        manual_value: Required when mode="manual_override"; ignored otherwise.
+        fmt:          Format spec used for values in the rationale string.
+
+    Raises:
+        ValueError: Unknown mode, or manual_override called without manual_value.
+    """
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES!r}, got {mode!r}")
+
+    if mode == "normalized":
+        return replace(detail, mode=mode)
+
+    if mode == "manual_override":
+        if manual_value is None:
+            raise ValueError("manual_override requires a non-None manual_value")
+        stat_note = (
+            f"Statistical normalized average was {detail.normalized:{fmt}}"
+            if detail.normalized is not None
+            else "Statistical normalized average unavailable"
+        )
+        if detail.outlier_years:
+            excl = ", ".join(f"FY{y}" for y in sorted(detail.outlier_years))
+            stat_note += f"; outliers excluded: {excl}"
+        rationale = (
+            f"Manual analyst override: {manual_value:{fmt}}. "
+            f"{stat_note}."
+        )
+        return replace(
+            detail,
+            selected_value=manual_value,
+            rationale=rationale,
+            mode=mode,
+            manual_value=manual_value,
+        )
+
+    _window_map = {
+        "raw_5y":      detail.historical_5y,
+        "recent_3y":   detail.historical_3y,
+        "recent_2y":   detail.historical_2y,
+        "most_recent": detail.most_recent,
+    }
+    _mode_labels = {
+        "raw_5y":      "Raw 5-year average",
+        "recent_3y":   "3-year average (most recent)",
+        "recent_2y":   "2-year average (most recent)",
+        "most_recent": "Single most-recent year value",
+    }
+    selected = _window_map[mode]
+    if selected is not None:
+        rationale = f"{_mode_labels[mode]}: {selected:{fmt}}."
+    else:
+        rationale = f"{_mode_labels[mode]}: N/A."
+    return replace(
+        detail,
+        selected_value=selected,
+        rationale=rationale,
+        mode=mode,
+        manual_value=None,
     )

@@ -28,6 +28,7 @@ EXPECTED_SHEETS = [
     "DCF Multiple",
     "Sensitivity - GGM",
     "Sensitivity - Exit",
+    "Assumption Audit",
 ]
 
 # ── Shared pipeline fixture ───────────────────────────────────────────────────

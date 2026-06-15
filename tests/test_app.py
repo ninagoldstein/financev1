@@ -86,7 +86,7 @@ def test_sidebar_exit_multiple_default():
 def test_sidebar_diluted_shares_default():
     at = AppTest.from_file(_APP_PATH, default_timeout=10)
     at.run()
-    assert at.sidebar.number_input[4].value == 125_000_000
+    assert at.sidebar.number_input[4].value == 0  # 0 = auto-detect from SEC
 
 
 def test_sidebar_display_unit_options():

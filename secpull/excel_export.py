@@ -9,6 +9,7 @@ Sheets produced (in order):
   5. DCF Multiple          — Exit EBITDA Multiple valuation outputs
   6. Sensitivity - GGM     — implied share price grid: WACC × terminal growth rate
   7. Sensitivity - Exit    — implied share price grid: WACC × exit EBITDA multiple
+  8. Assumption Audit      — per-driver mode, windows, outliers, and rationale
 
 display_unit controls presentation only — internal model always uses raw USD:
   "USD"     (default) — show actual values with comma formatting (#,##0)
@@ -18,6 +19,7 @@ Static values only — no Excel formulas.
 """
 from __future__ import annotations
 
+import math
 import pathlib
 from typing import Any
 
@@ -26,6 +28,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from secpull.assumptions import ForecastAssumptions
+from secpull.market_calibration import MarketCalibrationResult
+from secpull.normalize import AssumptionDetail
 from secpull.dcf import DCFInputs, DCFResult, ScenarioDCF, build_dcf
 from secpull.forecast import ProjectedStatements, ScenarioForecast
 from secpull.profile import CompanyProfile
@@ -728,6 +732,179 @@ def _write_sensitivity(
     _autofit(ws)
 
 
+# ── 8. MARKET CALIBRATION ────────────────────────────────────────────────────
+
+def _write_market_calibration(
+    wb: openpyxl.Workbook,
+    cal: MarketCalibrationResult,
+    ticker: str,
+    display_unit: str,
+) -> None:
+    """Sheet comparing model EV to market EV with implied-assumption table."""
+    ws = wb.create_sheet("Market Calibration")
+    ws.column_dimensions["A"].width = 36
+    ws.column_dimensions["B"].width = 22
+    dfmt = _dollar_fmt(display_unit)
+
+    row = 1
+    _cell(ws, row, 1, f"MARKET CALIBRATION — {ticker}",
+          bold=True, fill_hex=_NAVY, font_color=_WHITE)
+    _cell(ws, row, 2, None, fill_hex=_NAVY)
+    ws.row_dimensions[row].height = 20
+    row += 1
+
+    # ── EV bridge ─────────────────────────────────────────────────────────────
+    _subheader(ws, row, 1, "Enterprise Value Bridge", n_cols=2)
+    row += 1
+
+    def _ev_row(label: str, value: float) -> None:
+        nonlocal row
+        _cell(ws, row, 1, label, fill_hex=_GREY)
+        _cell(ws, row, 2, _disp(value, display_unit), fmt=dfmt, align="right")
+        row += 1
+
+    _ev_row("Market Equity Value",    cal.market_equity_value)
+    _ev_row("Market Enterprise Value", cal.market_enterprise_value)
+    _ev_row("Model Enterprise Value",  cal.model_enterprise_value)
+
+    gap_color = "C55A11" if cal.ev_gap < 0 else _BLACK
+    _cell(ws, row, 1, "EV Gap (Market − Model)", bold=True, fill_hex=_GREY)
+    _cell(ws, row, 2, _disp(cal.ev_gap, display_unit),
+          fmt=dfmt, bold=True, font_color=gap_color, align="right")
+    row += 1
+    _cell(ws, row, 1, "EV Gap %", fill_hex=_GREY)
+    _cell(ws, row, 2, cal.ev_gap_pct if not math.isnan(cal.ev_gap_pct) else "N/A",
+          fmt=_FMT_PCT if not math.isnan(cal.ev_gap_pct) else None,
+          font_color=gap_color, align="right")
+    row += 2
+
+    # ── Implied assumptions ───────────────────────────────────────────────────
+    _subheader(ws, row, 1, "Implied Assumptions (Base Scenario)", n_cols=2)
+    row += 1
+    _header_row(ws, row, 1, ["Assumption", "Implied Value"], fill_hex=_BLUE)
+    row += 1
+
+    def _fmt_implied(v: float | None, fmt: str, label: str) -> str:
+        if v is None:
+            return "No solution in range"
+        return f"{v:{fmt}}"
+
+    implied_rows = [
+        ("Implied WACC",                 _fmt_implied(cal.implied_wacc,                    ".2%", "WACC")),
+        ("Implied Terminal Growth Rate", _fmt_implied(cal.implied_terminal_growth_rate,    ".2%", "TGR")),
+        ("Implied Exit EBITDA Multiple", _fmt_implied(cal.implied_exit_ebitda_multiple,    ".1f", "exit") +
+         ("x" if cal.implied_exit_ebitda_multiple is not None else "")),
+        ("Implied Capex % Revenue",      _fmt_implied(cal.implied_capex_pct_revenue,       ".1%", "capex")),
+    ]
+    for i, (label, value) in enumerate(implied_rows):
+        fill = _GREY if i % 2 == 0 else None
+        _cell(ws, row, 1, label, fill_hex=fill)
+        _cell(ws, row, 2, value, bold=True, fill_hex=fill, align="right")
+        row += 1
+
+    row += 1
+
+    # ── Notes ─────────────────────────────────────────────────────────────────
+    if cal.notes:
+        _subheader(ws, row, 1, "Solver Notes", n_cols=2)
+        row += 1
+        for note in cal.notes:
+            _cell(ws, row, 1, note, fill_hex=_GREY)
+            _cell(ws, row, 2, None, fill_hex=_GREY)
+            ws.row_dimensions[row].height = 30
+            ws.cell(row=row, column=1).alignment = Alignment(
+                horizontal="left", vertical="top", wrap_text=True
+            )
+            row += 1
+
+    ws.freeze_panes = "A2"
+
+
+# ── 9. ASSUMPTION AUDIT ───────────────────────────────────────────────────────
+
+def _write_assumption_audit(
+    wb: openpyxl.Workbook,
+    assumptions: ForecastAssumptions,
+) -> None:
+    """Write one row per forecast driver showing all window averages, mode, and rationale."""
+    ws = wb.create_sheet("Assumption Audit")
+
+    row = 1
+    _cell(ws, row, 1, "ASSUMPTION AUDIT — Normalization & Mode Selection",
+          bold=True, fill_hex=_NAVY, font_color=_WHITE)
+    for c in range(2, 12):
+        _cell(ws, row, c, None, fill_hex=_NAVY)
+    ws.row_dimensions[row].height = 20
+    row += 1
+
+    headers = [
+        "Driver", "Mode", "Selected Value",
+        "5yr Avg", "3yr Avg", "2yr Avg", "Most Recent", "Normalized",
+        "Outlier Years", "Manual Value", "Rationale",
+    ]
+    _header_row(ws, row, 1, headers, fill_hex=_BLUE)
+    row += 1
+
+    _DRIVERS: list[tuple[str, AssumptionDetail | None]] = [
+        ("Revenue Growth",   assumptions.revenue_growth_detail),
+        ("EBIT Margin",      assumptions.ebit_margin_detail),
+        ("D&A % Revenue",    assumptions.da_pct_detail),
+        ("Capex % Revenue",  assumptions.capex_pct_detail),
+        ("Tax Rate",         assumptions.tax_rate_detail),
+        ("NWC % Revenue",    assumptions.nwc_pct_detail),
+    ]
+
+    def _pf(v: float | None) -> str:
+        return f"{v:.1%}" if v is not None else "N/A"
+
+    for i, (label, detail) in enumerate(_DRIVERS):
+        fill = _GREY if i % 2 == 0 else None
+        if detail is None:
+            _cell(ws, row, 1, label, fill_hex=fill)
+            for c in range(2, 12):
+                _cell(ws, row, c, "N/A", fill_hex=fill)
+            row += 1
+            continue
+
+        outlier_str = (
+            ", ".join(f"FY{y}" for y in sorted(detail.outlier_years))
+            if detail.outlier_years else "None"
+        )
+        manual_str = _pf(detail.manual_value) if detail.manual_value is not None else ""
+
+        values = [
+            label,
+            detail.mode,
+            _pf(detail.selected_value),
+            _pf(detail.historical_5y),
+            _pf(detail.historical_3y),
+            _pf(detail.historical_2y),
+            _pf(detail.most_recent),
+            _pf(detail.normalized),
+            outlier_str,
+            manual_str,
+            detail.rationale,
+        ]
+        for col_idx, v in enumerate(values, start=1):
+            bold = col_idx in (1, 3)  # Driver and Selected Value
+            _cell(ws, row, col_idx, v, bold=bold, fill_hex=fill,
+                  align="left" if col_idx in (1, 2, 9, 10, 11) else "right")
+        ws.row_dimensions[row].height = 36
+        row += 1
+
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 14
+    for col_letter in ("D", "E", "F", "G", "H"):
+        ws.column_dimensions[col_letter].width = 13
+    ws.column_dimensions["I"].width = 18
+    ws.column_dimensions["J"].width = 13
+    ws.column_dimensions["K"].width = 60
+    for cell in ws["K"]:
+        cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    ws.freeze_panes = "A3"
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def export_workbook(
@@ -738,6 +915,7 @@ def export_workbook(
     dcf: DCFResult,
     output_path: pathlib.Path | None = None,
     display_unit: str = "USD",
+    market_cal: MarketCalibrationResult | None = None,
 ) -> pathlib.Path:
     """Generate and save the full DCF workbook.
 
@@ -774,6 +952,9 @@ def export_workbook(
     _write_dcf_sheet(wb, dcf, mode="exit", display_unit=display_unit)
     _write_sensitivity(wb, projected, dcf, mode="ggm", display_unit=display_unit)
     _write_sensitivity(wb, projected, dcf, mode="exit", display_unit=display_unit)
+    if market_cal is not None:
+        _write_market_calibration(wb, market_cal, profile.ticker, display_unit)
+    _write_assumption_audit(wb, assumptions)
 
     wb.save(output_path)
     return output_path

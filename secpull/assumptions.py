@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from secpull.normalize import AssumptionDetail, normalize_series, clamp_detail
+from secpull.normalize import AssumptionDetail, normalize_series, clamp_detail, select_from_detail
 from secpull.profile import CompanyProfile
 from secpull.quality import QualityIssue
 
@@ -97,6 +97,7 @@ def _series_vals(series: tuple[tuple[int, float], ...]) -> tuple[list[float], li
 def build_assumptions_from_profile(
     profile: CompanyProfile,
     overrides: dict | None = None,
+    modes: dict[str, tuple[str, float | None]] | None = None,
 ) -> ForecastAssumptions:
     """Derive ForecastAssumptions from historical CompanyProfile averages.
 
@@ -106,18 +107,38 @@ def build_assumptions_from_profile(
     mean becomes the selected_value — temporary events (restructurings, capex
     spikes, COVID impacts) are automatically excluded from the base case.
 
-    Precedence: explicit override > normalized average > fallback default.
+    Precedence: explicit override > mode-selected value > normalized average > fallback.
     Clamping is applied to the float fields; AssumptionDetail.selected_value
     reflects the post-clamp value.
+
+    Args:
+        profile:   Historical CompanyProfile.
+        overrides: Dict of driver-name → float to hard-set a float value directly.
+        modes:     Dict of driver-name → (mode_str, manual_value_or_None) to
+                   control which window value is selected.  Valid driver names:
+                   "revenue_growth", "ebit_margin", "da_pct_revenue",
+                   "capex_pct_revenue", "effective_tax_rate", "nwc_pct_revenue".
+                   mode_str must be one of normalize.MODES.
     """
     ov = overrides or {}
+    md = modes or {}
+
+    def _apply_mode(detail: AssumptionDetail, driver: str) -> AssumptionDetail:
+        """Apply mode selection if caller requested one for this driver."""
+        if driver not in md:
+            return detail
+        mode_str, manual_val = md[driver]
+        return select_from_detail(detail, mode_str, manual_val)
 
     # ── Revenue growth ────────────────────────────────────────────────────────
     rg_vals, rg_years = _series_vals(profile.revenue_growth_series)
-    rg_detail = normalize_series(rg_vals, rg_years, "revenue_growth")
+    rg_detail = _apply_mode(
+        normalize_series(rg_vals, rg_years, "revenue_growth"),
+        "revenue_growth",
+    )
     normalized_base = (
-        rg_detail.normalized
-        if rg_detail.normalized is not None
+        rg_detail.selected_value
+        if rg_detail.selected_value is not None
         else profile.revenue_cagr.value
         if profile.revenue_cagr.value is not None
         else _SPREAD
@@ -125,18 +146,7 @@ def build_assumptions_from_profile(
     base_growth = float(ov.get("base_revenue_growth", normalized_base))
     bear_growth = float(ov.get("bear_revenue_growth", base_growth - _SPREAD))
     bull_growth = float(ov.get("bull_revenue_growth", base_growth + _SPREAD))
-    # Rebuild detail with final selected_value in case override was used
-    revenue_growth_detail = AssumptionDetail(
-        historical_5y=rg_detail.historical_5y,
-        historical_3y=rg_detail.historical_3y,
-        historical_2y=rg_detail.historical_2y,
-        most_recent=rg_detail.most_recent,
-        normalized=rg_detail.normalized,
-        selected_value=base_growth,
-        rationale=rg_detail.rationale,
-        outlier_years=rg_detail.outlier_years,
-        outlier_notes=rg_detail.outlier_notes,
-    )
+    revenue_growth_detail = _rebuild(rg_detail, base_growth)
 
     # ── Gross margin (no normalization — structural, not vol.) ────────────────
     gm_raw = profile.avg_gross_margin.value
@@ -147,14 +157,20 @@ def build_assumptions_from_profile(
 
     # ── EBIT margin ───────────────────────────────────────────────────────────
     em_vals, em_years = _series_vals(profile.ebit_margin_series)
-    em_detail = normalize_series(em_vals, em_years, "ebit_margin")
-    em_normalized = em_detail.normalized if em_detail.normalized is not None else _FALLBACK_EBIT_MARGIN
+    em_detail = _apply_mode(
+        normalize_series(em_vals, em_years, "ebit_margin"),
+        "ebit_margin",
+    )
+    em_normalized = em_detail.selected_value if em_detail.selected_value is not None else _FALLBACK_EBIT_MARGIN
     ebit_margin = float(ov.get("ebit_margin", em_normalized))
 
     # ── Tax rate ───────────────────────────────────────────────────────────────
     tr_vals, tr_years = _series_vals(profile.tax_rate_series)
-    tr_detail = normalize_series(tr_vals, tr_years, "effective_tax_rate")
-    tr_normalized = tr_detail.normalized if tr_detail.normalized is not None else _FALLBACK_TAX_RATE
+    tr_detail = _apply_mode(
+        normalize_series(tr_vals, tr_years, "effective_tax_rate"),
+        "effective_tax_rate",
+    )
+    tr_normalized = tr_detail.selected_value if tr_detail.selected_value is not None else _FALLBACK_TAX_RATE
     tr_raw_val = float(ov.get("effective_tax_rate", tr_normalized))
     effective_tax_rate = _clamp("effective_tax_rate", tr_raw_val)
     tr_detail = clamp_detail(
@@ -164,24 +180,33 @@ def build_assumptions_from_profile(
 
     # ── D&A % revenue ─────────────────────────────────────────────────────────
     da_vals, da_years = _series_vals(profile.da_pct_series)
-    da_detail_raw = normalize_series(da_vals, da_years, "da_pct_revenue")
-    da_normalized = da_detail_raw.normalized if da_detail_raw.normalized is not None else 0.0
+    da_detail_raw = _apply_mode(
+        normalize_series(da_vals, da_years, "da_pct_revenue"),
+        "da_pct_revenue",
+    )
+    da_normalized = da_detail_raw.selected_value if da_detail_raw.selected_value is not None else 0.0
     da_raw_val = float(ov.get("da_pct_revenue", da_normalized))
     da_pct_revenue = _clamp("da_pct_revenue", da_raw_val)
     da_detail = clamp_detail(_rebuild(da_detail_raw, da_raw_val), *_CLAMP["da_pct_revenue"])
 
     # ── Capex % revenue ───────────────────────────────────────────────────────
     cx_vals, cx_years = _series_vals(profile.capex_pct_series)
-    cx_detail_raw = normalize_series(cx_vals, cx_years, "capex_pct_revenue")
-    cx_normalized = cx_detail_raw.normalized if cx_detail_raw.normalized is not None else 0.0
+    cx_detail_raw = _apply_mode(
+        normalize_series(cx_vals, cx_years, "capex_pct_revenue"),
+        "capex_pct_revenue",
+    )
+    cx_normalized = cx_detail_raw.selected_value if cx_detail_raw.selected_value is not None else 0.0
     cx_raw_val = float(ov.get("capex_pct_revenue", cx_normalized))
     capex_pct_revenue = _clamp("capex_pct_revenue", cx_raw_val)
     cx_detail = clamp_detail(_rebuild(cx_detail_raw, cx_raw_val), *_CLAMP["capex_pct_revenue"])
 
     # ── NWC % revenue ─────────────────────────────────────────────────────────
     nwc_vals, nwc_years = _series_vals(profile.nwc_pct_series)
-    nwc_detail_raw = normalize_series(nwc_vals, nwc_years, "nwc_pct_revenue")
-    nwc_normalized = nwc_detail_raw.normalized if nwc_detail_raw.normalized is not None else 0.0
+    nwc_detail_raw = _apply_mode(
+        normalize_series(nwc_vals, nwc_years, "nwc_pct_revenue"),
+        "nwc_pct_revenue",
+    )
+    nwc_normalized = nwc_detail_raw.selected_value if nwc_detail_raw.selected_value is not None else 0.0
     nwc_raw_val = float(ov.get("nwc_pct_revenue", nwc_normalized))
     nwc_pct_revenue = _clamp("nwc_pct_revenue", nwc_raw_val)
     nwc_detail = clamp_detail(_rebuild(nwc_detail_raw, nwc_raw_val), *_CLAMP["nwc_pct_revenue"])

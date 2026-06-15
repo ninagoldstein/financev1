@@ -9,6 +9,7 @@ from secpull.assumptions import build_assumptions_from_profile
 from secpull.derived import compute_derived_metrics
 from secpull.extract import extract_metrics
 from secpull.normalize import (
+    MODES,
     OUTLIER_SIGMA,
     AssumptionDetail,
     _mean,
@@ -16,6 +17,7 @@ from secpull.normalize import (
     _window_mean,
     clamp_detail,
     normalize_series,
+    select_from_detail,
 )
 from secpull.profile import build_profile
 from secpull.statements import build_statements
@@ -379,3 +381,161 @@ def test_meta_base_revenue_growth_matches_detail(meta_assumptions):
     assert a.base_revenue_growth == pytest.approx(
         a.revenue_growth_detail.selected_value, abs=1e-9
     )
+
+
+# ── select_from_detail: all six modes ─────────────────────────────────────────
+
+# Shared fixture for mode tests: 5-value series with one high outlier (FY2025)
+_MODE_VALS  = [0.10, 0.11, 0.10, 0.12, 0.50]
+_MODE_YEARS = [2021, 2022, 2023, 2024, 2025]
+
+
+@pytest.fixture(scope="module")
+def _base_detail():
+    return normalize_series(_MODE_VALS, _MODE_YEARS, "metric")
+
+
+def test_select_normalized_preserves_selected_value(_base_detail):
+    result = select_from_detail(_base_detail, "normalized")
+    assert result.selected_value == pytest.approx(_base_detail.normalized)
+    assert result.mode == "normalized"
+
+
+def test_select_normalized_preserves_rationale(_base_detail):
+    result = select_from_detail(_base_detail, "normalized")
+    assert result.rationale == _base_detail.rationale
+
+
+def test_select_raw_5y(_base_detail):
+    result = select_from_detail(_base_detail, "raw_5y")
+    assert result.selected_value == pytest.approx(_base_detail.historical_5y)
+    assert result.mode == "raw_5y"
+    assert "Raw 5-year average" in result.rationale
+
+
+def test_select_recent_3y(_base_detail):
+    result = select_from_detail(_base_detail, "recent_3y")
+    assert result.selected_value == pytest.approx(_base_detail.historical_3y)
+    assert result.mode == "recent_3y"
+    assert "3-year average" in result.rationale
+
+
+def test_select_recent_2y(_base_detail):
+    result = select_from_detail(_base_detail, "recent_2y")
+    assert result.selected_value == pytest.approx(_base_detail.historical_2y)
+    assert result.mode == "recent_2y"
+    assert "2-year average" in result.rationale
+
+
+def test_select_most_recent(_base_detail):
+    result = select_from_detail(_base_detail, "most_recent")
+    assert result.selected_value == pytest.approx(_base_detail.most_recent)
+    assert result.mode == "most_recent"
+    assert "most-recent year" in result.rationale
+
+
+def test_select_manual_override_sets_selected_value(_base_detail):
+    result = select_from_detail(_base_detail, "manual_override", manual_value=0.155)
+    assert result.selected_value == pytest.approx(0.155)
+    assert result.mode == "manual_override"
+    assert result.manual_value == pytest.approx(0.155)
+
+
+def test_select_manual_override_rationale_says_analyst_override(_base_detail):
+    result = select_from_detail(_base_detail, "manual_override", manual_value=0.155)
+    assert "Manual analyst override" in result.rationale
+    assert "15.5%" in result.rationale
+
+
+def test_select_manual_override_rationale_mentions_normalized(_base_detail):
+    result = select_from_detail(_base_detail, "manual_override", manual_value=0.155)
+    # Rationale must state what the statistical normalized average was
+    assert "Statistical normalized average" in result.rationale
+    norm_str = f"{_base_detail.normalized:.1%}"
+    assert norm_str in result.rationale
+
+
+def test_select_manual_override_rationale_mentions_outlier_years(_base_detail):
+    # FY2025 is flagged; rationale must reference it so the audit trail is clear
+    result = select_from_detail(_base_detail, "manual_override", manual_value=0.155)
+    assert "FY2025" in result.rationale
+
+
+def test_select_manual_override_without_value_raises(_base_detail):
+    with pytest.raises(ValueError, match="manual_value"):
+        select_from_detail(_base_detail, "manual_override")
+
+
+def test_select_invalid_mode_raises(_base_detail):
+    with pytest.raises(ValueError, match="mode must be one of"):
+        select_from_detail(_base_detail, "bogus_mode")
+
+
+def test_select_does_not_mutate_original(_base_detail):
+    original_sv = _base_detail.selected_value
+    select_from_detail(_base_detail, "raw_5y")
+    assert _base_detail.selected_value == pytest.approx(original_sv)
+
+
+def test_modes_constant_contains_all_expected_modes():
+    expected = {"normalized", "raw_5y", "recent_3y", "recent_2y", "most_recent", "manual_override"}
+    assert set(MODES) == expected
+
+
+# ── META capex: normalized remains ~21.3%, manual override to 15.5% ──────────
+
+
+def test_meta_capex_normalized_approximately_21_3_pct(meta_assumptions):
+    """Normalized capex (FY2021-2024, FY2025 excluded) should be ~21.3%."""
+    detail = meta_assumptions.capex_pct_detail
+    assert detail.normalized == pytest.approx(0.213, abs=0.005), (
+        f"Expected ~21.3%, got {detail.normalized:.1%}"
+    )
+
+
+def test_meta_capex_manual_override_changes_selected_value(meta_profile):
+    """build_assumptions_from_profile with manual_override should use 15.5%."""
+    asmp = build_assumptions_from_profile(
+        meta_profile,
+        modes={"capex_pct_revenue": ("manual_override", 0.155)},
+    )
+    assert asmp.capex_pct_revenue == pytest.approx(0.155, abs=1e-9)
+    assert asmp.capex_pct_detail.selected_value == pytest.approx(0.155, abs=1e-9)
+    assert asmp.capex_pct_detail.mode == "manual_override"
+
+
+def test_meta_capex_manual_override_rationale_distinguishes_from_statistical(meta_profile):
+    """Manual override rationale must clearly identify analyst judgment vs. LOO outlier."""
+    asmp = build_assumptions_from_profile(
+        meta_profile,
+        modes={"capex_pct_revenue": ("manual_override", 0.155)},
+    )
+    rationale = asmp.capex_pct_detail.rationale
+    assert "Manual analyst override" in rationale
+    assert "Statistical normalized average" in rationale
+    assert "FY2025" in rationale  # outlier year must appear in the audit trail
+
+
+def test_meta_capex_normalized_default_mode_still_21_3(meta_profile):
+    """Explicitly passing normalized mode must preserve the same result as default."""
+    asmp_default = build_assumptions_from_profile(meta_profile)
+    asmp_explicit = build_assumptions_from_profile(
+        meta_profile,
+        modes={"capex_pct_revenue": ("normalized", None)},
+    )
+    assert asmp_explicit.capex_pct_revenue == pytest.approx(
+        asmp_default.capex_pct_revenue, abs=1e-9
+    )
+
+
+def test_meta_capex_raw_5y_mode_includes_fy2025(meta_profile):
+    """raw_5y includes FY2025 spike so selected_value > normalized."""
+    asmp = build_assumptions_from_profile(
+        meta_profile,
+        modes={"capex_pct_revenue": ("raw_5y", None)},
+    )
+    detail = asmp.capex_pct_detail
+    # raw_5y includes FY2025 so selected_value should equal historical_5y
+    assert asmp.capex_pct_revenue == pytest.approx(detail.historical_5y, abs=1e-9)
+    # and it should be higher than the normalized value
+    assert asmp.capex_pct_revenue > detail.normalized
